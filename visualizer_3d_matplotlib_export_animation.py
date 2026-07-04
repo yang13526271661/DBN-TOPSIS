@@ -32,7 +32,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from matplotlib.widgets import Slider, Button
 from matplotlib.patches import FancyBboxPatch
@@ -93,6 +93,7 @@ ICON_WORLD_SIZES = {
 ICON_RENDER_PIXELS = 30
 
 ICON_CACHE = {}
+MISSING_ICON_WARNING_PRINTED = False
 
 # 轨迹颜色仍按类型区分
 TYPE_COLORS = {
@@ -206,6 +207,85 @@ def get_enemy_display_type(enemy: dict) -> str:
     return normalize_type(tp)
 
 
+def fallback_icon_image(tp: str):
+    """Create a small transparent RGBA icon when external PNG assets are absent."""
+    size = ICON_RENDER_PIXELS
+    pad = max(3, size // 10)
+    center = size / 2.0
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    fill_by_type = {
+        "FriendlyFighter": (45, 121, 245, 235),
+        "Missile": (220, 38, 38, 235),
+        "Fighter": (245, 130, 32, 235),
+        "Bomber": (126, 63, 181, 235),
+        "Heli": (42, 160, 84, 235),
+        "UAV": (105, 112, 122, 235),
+        "Unknown": (40, 40, 40, 235),
+    }
+    fill = fill_by_type.get(tp, fill_by_type["Unknown"])
+    outline = (20, 20, 20, 210)
+    highlight = (255, 255, 255, 210)
+
+    if tp == "Missile":
+        body = [
+            (center, pad),
+            (size - pad - 1, size - pad - 1),
+            (center, size - pad - 4),
+            (pad, size - pad - 1),
+        ]
+        draw.polygon(body, fill=fill, outline=outline)
+        draw.line((center, pad + 4, center, size - pad - 5), fill=highlight, width=1)
+    elif tp == "Bomber":
+        body = [
+            (center, pad),
+            (size - pad, center + 1),
+            (center + 5, center + 4),
+            (center + 4, size - pad),
+            (center - 4, size - pad),
+            (center - 5, center + 4),
+            (pad, center + 1),
+        ]
+        draw.polygon(body, fill=fill, outline=outline)
+        draw.rectangle((center - 3, pad + 4, center + 3, size - pad - 4), fill=highlight)
+    elif tp == "Heli":
+        draw.ellipse((center - 5, center - 7, center + 5, center + 8), fill=fill, outline=outline)
+        draw.line((pad, center - 10, size - pad, center - 10), fill=outline, width=2)
+        draw.line((center, pad, center, center - 3), fill=outline, width=2)
+        draw.line((center, center + 8, center, size - pad), fill=outline, width=2)
+        draw.line((center, size - pad, center + 8, size - pad + 1), fill=outline, width=2)
+    elif tp == "UAV":
+        body = [
+            (center, pad),
+            (size - pad, center),
+            (center + 4, center + 3),
+            (center + 2, size - pad),
+            (center - 2, size - pad),
+            (center - 4, center + 3),
+            (pad, center),
+        ]
+        draw.polygon(body, fill=fill, outline=outline)
+        draw.line((pad + 4, center, size - pad - 4, center), fill=highlight, width=1)
+    else:
+        body = [
+            (center, pad),
+            (center + 5, center + 5),
+            (size - pad, center + 7),
+            (center + 4, center + 10),
+            (center + 3, size - pad),
+            (center, size - pad - 4),
+            (center - 3, size - pad),
+            (center - 4, center + 10),
+            (pad, center + 7),
+            (center - 5, center + 5),
+        ]
+        draw.polygon(body, fill=fill, outline=outline)
+        draw.line((center, pad + 4, center, size - pad - 5), fill=highlight, width=1)
+
+    return np.asarray(img, dtype=float) / 255.0
+
+
 # =========================
 # PNG 图标函数：三维平面贴图版
 # =========================
@@ -222,6 +302,19 @@ def load_icon_image(tp: str):
 
     filename = ICON_FILES.get(tp, ICON_FILES["Unknown"])
     icon_path = ICON_DIR / filename
+
+    if not icon_path.exists():
+        global MISSING_ICON_WARNING_PRINTED
+        if not MISSING_ICON_WARNING_PRINTED:
+            print(
+                "[WARN] icons/*.png not found. "
+                "Using built-in fallback icons for this export. "
+                "Create an icons folder to use custom PNG aircraft icons."
+            )
+            MISSING_ICON_WARNING_PRINTED = True
+        arr = fallback_icon_image(tp)
+        ICON_CACHE[tp] = arr
+        return arr
 
     if not icon_path.exists():
         required = "\n".join([f"  - {ICON_DIR / v}" for k, v in ICON_FILES.items() if k != "Unknown"])

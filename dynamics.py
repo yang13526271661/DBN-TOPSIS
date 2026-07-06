@@ -394,6 +394,7 @@ def build_pairwise_target(enemy_state, friendly_state):
         "Target_ID": enemy_state.get("Target_ID", None),
         "Name": enemy_state.get("Name", "Unknown"),
         "Type": enemy_state.get("Type", None),
+        "IntentGT": enemy_state.get("IntentGT", None),
         "Jamming": enemy_state.get("Jamming", None),
 
         "Distance": d_ij,
@@ -519,30 +520,35 @@ def build_formation_target(enemy_state, friendlies):
     formation_speed = formation_closing_speed / 0.340
 
     return {
-        "Time": enemy_state.get("Time", None),
-        "Target_ID": enemy_state.get("Target_ID", None),
-        "Name": enemy_state.get("Name", "Unknown"),
-        "Type": enemy_state.get("Type", None),
-        "Jamming": enemy_state.get("Jamming", None),
+    "Time": enemy_state.get("Time", None),
+    "Target_ID": enemy_state.get("Target_ID", None),
+    "Name": enemy_state.get("Name", "Unknown"),
+    "Type": enemy_state.get("Type", None),
+    "IntentGT": enemy_state.get("IntentGT", None),
+    "Jamming": enemy_state.get("Jamming", None),
 
-        # 输入 DBN-TOPSIS 的编队相对指标
-        "Distance": formation_distance,
-        "Speed": formation_speed,
-        "Height": height_diff,
-        "Heading": heading_form,
-        "Shortcut": s_min,
+    # 输入 DBN-TOPSIS 的编队相对指标
+    "Distance": formation_distance,
+    "Speed": formation_speed,
+    "Height": height_diff,
+    "Heading": heading_form,
+    "Shortcut": s_min,
 
-        # 调试与论文解释用的编队指标
-        "D_center": d_center,
-        "D_boundary": d_boundary,
-        "D_min": d_min,
-        "S_min": s_min,
-        "TTC_min": ttc_min,
-        "VC_form": vc_form,
-        "VC_max": vc_max,
-        "CoverRatio": cover_ratio,
-        "FormationRadius": R_f,
-    }
+    # 新增：给 DBN 意图节点使用的统一字段
+    "ClosingSpeed": formation_closing_speed,
+    "TTC": ttc_min,
+
+    # 调试与论文解释用的编队指标
+    "D_center": d_center,
+    "D_boundary": d_boundary,
+    "D_min": d_min,
+    "S_min": s_min,
+    "TTC_min": ttc_min,
+    "VC_form": vc_form,
+    "VC_max": vc_max,
+    "CoverRatio": cover_ratio,
+    "FormationRadius": R_f,
+ }
 
 
 def topsis_closeness(prob_matrix):

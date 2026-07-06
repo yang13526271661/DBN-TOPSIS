@@ -188,12 +188,47 @@ if __name__ == "__main__":
     print("Total Rank: " + " > ".join([f"T{r}" for r in np.argsort(total_scores)[::-1] + 1]))
     print("★"*80 + "\n")
 
-        # ================= 相对运动指标检查：验证编队指标是否真的按运动目标重新计算 =================
-    debug_time = 90
 
+    # ================= 编队视角五类意图后验概率检查 =================
     # 更稳妥：按 record["time"] 找记录，而不是直接用 D_records[90]
     debug_record = next(record for record in D_records if record["time"] == debug_time)
 
+    print("\n" + "★"*100)
+    print(f">>> 【{debug_time}s 时刻：编队视角五类意图后验概率 P(E)】 <<<")
+
+    intent_names_cn = debug_record.get("intent_names_cn", [
+        "攻击突防", "电子干扰", "侦察监视", "佯攻欺骗", "护航规避"
+    ])
+
+    header = (
+        f"{'Target':<8} | "
+        + " | ".join([f"{name:<10}" for name in intent_names_cn])
+        + " | Pred Intent | GT"
+    )
+    print(header)
+    print("-" * len(header))
+
+    intent_probs = debug_record["form_intent_posteriors"]
+
+    for j in range(intent_probs.shape[0]):
+        probs = intent_probs[j]
+        pred_idx = int(np.argmax(probs))
+        pred_name = intent_names_cn[pred_idx]
+
+        gt = debug_record["formation_targets"][j].get("IntentGT", "Unknown")
+
+        row = f"T{j+1:<7} | " + " | ".join([f"{p:<10.4f}" for p in probs])
+        row += f" | {pred_name:<10} | {gt}"
+        print(row)
+
+    print("★"*100 + "\n")
+
+
+    # ================= 相对运动指标检查：验证编队指标是否真的按运动目标重新计算 =================
+    print("\n" + "★"*80)
+    print(f">>> 【{debug_time}s 时刻：相对运动指标检查】 <<<")
+    print("Target | D_center | D_min | Heading | S_min | TTC_min | VC_form | VC_max")
+    print("-" * 90)
     print("\n" + "★"*80)
     print(f">>> 【{debug_time}s 时刻：相对运动指标检查】 <<<")
     print("Target | D_center | D_min | Heading | S_min | TTC_min | VC_form | VC_max")

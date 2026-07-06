@@ -34,6 +34,15 @@ import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 from PIL import Image, ImageDraw
 
+try:
+    RESAMPLE_LANCZOS = Image.Resampling.LANCZOS
+except AttributeError:
+    if hasattr(Image, "LANCZOS"):
+        RESAMPLE_LANCZOS = Image.LANCZOS
+    else:
+        RESAMPLE_LANCZOS = Image.ANTIALIAS
+
+
 from matplotlib.widgets import Slider, Button
 from matplotlib.patches import FancyBboxPatch
 from mpl_toolkits.mplot3d import Axes3D, proj3d  # noqa: F401
@@ -325,7 +334,7 @@ def load_icon_image(tp: str):
         )
 
     img = Image.open(icon_path).convert("RGBA")
-    img = img.resize((ICON_RENDER_PIXELS, ICON_RENDER_PIXELS), Image.Resampling.LANCZOS)
+    img = img.resize((ICON_RENDER_PIXELS, ICON_RENDER_PIXELS), Image.LANCZOS)
     arr = np.asarray(img, dtype=float) / 255.0
 
     ICON_CACHE[tp] = arr

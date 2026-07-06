@@ -119,6 +119,7 @@ def run_formation_dynamic_assessment(
 
         # 单机级分支：得到 N_friendly × N_enemy 的威胁矩阵
         pair_posteriors = np.zeros((num_friendly, num_enemy, 3), dtype=float)
+        pair_intent_posteriors = np.zeros((num_friendly, num_enemy, model.states_E), dtype=float)
         pair_scores = np.zeros((num_friendly, num_enemy), dtype=float)
 
         for i, friendly in enumerate(friendlies):
@@ -156,12 +157,14 @@ def run_formation_dynamic_assessment(
                 if fixed_id_evidences.get(j, None) is not None:
                     pair_ev["ID"] = fixed_id_evidences[j]
 
-                posterior = model.bayesian_inference(
+                posterior, intent_posterior = model.bayesian_inference(
                     pair_ev,
-                    pair_priors[i, j]
+                    pair_priors[i, j],
+                    return_intent=True
                 )
 
                 pair_posteriors[i, j] = posterior
+                pair_intent_posteriors[i, j] = intent_posterior
                 pair_priors[i, j] = posterior @ model.transition_matrix
 
                 prob_matrix_i.append(posterior)
@@ -175,6 +178,7 @@ def run_formation_dynamic_assessment(
             
         # 编队整体分支
         form_posteriors = np.zeros((num_enemy, 3), dtype=float)
+        form_intent_posteriors = np.zeros((num_enemy, model.states_E), dtype=float)
         form_targets_debug = []
 
         for j, enemy in enumerate(enemies):
@@ -186,8 +190,14 @@ def run_formation_dynamic_assessment(
             if fixed_id_evidences.get(j, None) is not None:
                 form_ev["ID"] = fixed_id_evidences[j]
 
-            posterior = model.bayesian_inference(form_ev, form_priors[j])
+            posterior, intent_posterior = model.bayesian_inference(
+                form_ev,
+                form_priors[j],
+                return_intent=True
+            )
+
             form_posteriors[j] = posterior
+            form_intent_posteriors[j] = intent_posterior
             form_priors[j] = posterior @ model.transition_matrix
 
         form_scores_raw = topsis_closeness(form_posteriors)
@@ -234,16 +244,26 @@ def run_formation_dynamic_assessment(
         record_entry = {
             "time": current_time,
 
-            # 为了兼容你原来的表格和 Spearman 代码
+            # 威胁评估主输出
             "scores": total_scores.copy(),
             "posteriors": form_posteriors.copy(),
             "rank": rank.copy(),
 
-            # 新增输出
+            # 单机分支
             "pair_scores": pair_scores.copy(),
             "pair_posteriors": pair_posteriors.copy(),
+            "pair_intent_posteriors": pair_intent_posteriors.copy(),
+
+            # 编队分支
             "form_scores": form_scores.copy(),
             "agg_scores": agg_scores.copy(),
+            "form_intent_posteriors": form_intent_posteriors.copy(),
+
+            # 意图名称
+            "intent_names": model.intent_names,
+            "intent_names_cn": model.intent_names_cn,
+
+            # 调试字段
             "formation_targets": form_targets_debug,
         }
 

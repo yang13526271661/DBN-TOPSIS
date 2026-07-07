@@ -34,7 +34,7 @@ CSV_FIELDS = [
 # 运行 IFF 场景并按目标维护滑动窗口识别结果。
 def run_realtime_iff_assessment(num_steps=601, window_size=3):
     config = IFFConfig(
-        route=RouteProfile(height_m=1000.0, speed_kmh=600.0, heading_deg=290.0),
+        route=RouteProfile(height_m=5000.0, speed_kmh=600.0, heading_deg=290.0),
         window_size=window_size,
     )
     recognizer = LowAltitudeIFFRecognizer(config)

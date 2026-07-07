@@ -6,9 +6,9 @@ from dataclasses import dataclass
 class RouteProfile:
     """Minimum-risk return corridor used by the IFF simulation."""
 
-    height_m: float = 1000.0
+    height_m: float = 3000.0
     speed_kmh: float = 600.0
-    heading_deg: float = 290.0
+    heading_deg: float = 250.0
 
 
 # 汇总 IFF 识别算法的全部可调参数。
@@ -20,14 +20,13 @@ class IFFConfig:
     max_delta_v_kmh: float = 50.0
     max_delta_c_deg: float = 10.0
     max_delta_h2_m: float = 100.0
-    extreme_delta_ratio_cap: float = 30.0
 
     source_reliability: float = 0.90
     window_size: int = 3
     conflict_epsilon: float = 1e-9
 
-    fuzzy_input_sigma: float = 0.18
-    fuzzy_output_sigma: float = 0.18
+    fuzzy_input_sigma: float = 0.125
+    fuzzy_output_sigma: float = 0.125
     fuzzy_grid_size: int = 101
     js_conflict_weight: float = 0.50
     ds_conflict_weight: float = 0.50

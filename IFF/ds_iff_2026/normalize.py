@@ -21,18 +21,29 @@ def circular_abs_delta_deg(value: float, reference: float) -> float:
     return min(raw, 360.0 - raw)
 
 
-# 将偏差映射为归一化比例，并对阈值外偏差做对数软饱和。
-def soft_ratio(value: Optional[float], max_value: float, cap: float) -> Optional[float]:
+# 按论文分段规范化思想将物理偏差映射到 [0, 1] 模糊论域。
+def paper_segment_value(value: Optional[float], max_value: float, levels: int = 3) -> Optional[float]:
     value = finite_or_none(value)
     if value is None:
         return None
     if max_value <= 0.0:
         return 0.0
-    ratio = max(0.0, value / max_value)
-    if ratio <= 1.0:
-        return ratio
-    cap = max(1.0, float(cap))
-    return 1.0 + math.log1p(min(ratio, cap) - 1.0) / math.log(cap)
+    levels = max(2, int(levels))
+    value = max(0.0, min(float(value), float(max_value)))
+    physical_width = float(max_value) / levels
+    center_step = 1.0 / (levels - 1)
+    half_step = center_step / 2.0
+
+    index = min(int(value / physical_width), levels - 1)
+    lower_x = index * physical_width
+    upper_x = (index + 1) * physical_width if index < levels - 1 else float(max_value)
+    if upper_x <= lower_x:
+        return 1.0
+
+    lower_y = 0.0 if index == 0 else index * center_step - half_step
+    upper_y = 1.0 if index == levels - 1 else index * center_step + half_step
+    fraction = (value - lower_x) / (upper_x - lower_x)
+    return max(0.0, min(lower_y + fraction * (upper_y - lower_y), 1.0))
 
 
 # 计算单条观测相对标准通道的原始偏差。
@@ -54,8 +65,8 @@ def observation_deltas(obs: Observation, config: IFFConfig) -> Dict[str, Optiona
 # 计算单条观测偏差的归一化结果。
 def normalized_deltas(deltas: Dict[str, Optional[float]], config: IFFConfig):
     return {
-        "H1": soft_ratio(deltas.get("H1"), config.max_delta_h1_m, config.extreme_delta_ratio_cap),
-        "V": soft_ratio(deltas.get("V"), config.max_delta_v_kmh, config.extreme_delta_ratio_cap),
-        "C": soft_ratio(deltas.get("C"), config.max_delta_c_deg, config.extreme_delta_ratio_cap),
-        "H2": soft_ratio(deltas.get("H2"), config.max_delta_h2_m, config.extreme_delta_ratio_cap),
+        "H1": paper_segment_value(deltas.get("H1"), config.max_delta_h1_m, levels=3),
+        "V": paper_segment_value(deltas.get("V"), config.max_delta_v_kmh, levels=3),
+        "C": paper_segment_value(deltas.get("C"), config.max_delta_c_deg, levels=3),
+        "H2": paper_segment_value(deltas.get("H2"), config.max_delta_h2_m, levels=3),
     }

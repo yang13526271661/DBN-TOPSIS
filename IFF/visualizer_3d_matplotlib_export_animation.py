@@ -42,7 +42,7 @@ TAIL_LEN_DEFAULT = 50
 # 生成 IFF 可视化所需的目标、编队和识别结果时序。
 def build_iff_visual_records(num_steps=601, window_size=3):
     config = IFFConfig(
-        route=RouteProfile(height_m=1000.0, speed_kmh=600.0, heading_deg=290.0),
+        route=RouteProfile(height_m=3000.0, speed_kmh=600.0, heading_deg=250.0),
         window_size=window_size,
     )
     recognizer = LowAltitudeIFFRecognizer(config)

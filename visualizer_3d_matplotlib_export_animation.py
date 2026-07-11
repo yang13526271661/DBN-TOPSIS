@@ -194,7 +194,7 @@ def get_enemy_display_type(enemy: dict) -> str:
     否则显示 sensor_type / Type / type。
     """
     ds_action = enemy.get("ds_action", "")
-    if ds_action == "discount_sensor_type_by_DS" and enemy.get("fused_type"):
+    if ds_action in ("discount_sensor_type_by_DS", "temporal_window_conflict_by_DS") and enemy.get("fused_type"):
         return normalize_type(str(enemy.get("fused_type")))
 
     tp = str(
@@ -493,6 +493,8 @@ def build_info_text(record: dict):
         suffix = f"({tp})"
         if ds_action == "discount_sensor_type_by_DS":
             suffix += f"  DS:{sensor}->{fused}"
+        if e.get("has_type_jump") or ds_action == "temporal_window_conflict_by_DS":
+            suffix += f"  JUMP:{safe_float(e.get('jump_score'), 0.0):.2f}"
         lines.append(f"{e.get('label')}: {score:.4f} {suffix}")
     lines.append("")
 
@@ -517,6 +519,11 @@ def build_info_text(record: dict):
         if e.get("ds_action") == "discount_sensor_type_by_DS":
             event_lines.append(
                 f"D-S corrected {e.get('label')}: {e.get('sensor_type')} -> {e.get('fused_type')}"
+            )
+        if e.get("has_type_jump") or e.get("ds_action") == "temporal_window_conflict_by_DS":
+            event_lines.append(
+                f"Type jump {e.get('label')}: score={safe_float(e.get('jump_score'), 0.0):.2f}, "
+                f"window K={safe_float(e.get('window_conflict'), 0.0):.2f}"
             )
         if e.get("is_missing"):
             event_lines.append(f"AR restoring {e.get('label')}")

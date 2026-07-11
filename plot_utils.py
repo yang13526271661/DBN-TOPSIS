@@ -194,6 +194,11 @@ def plot_ds_conflict_diagnosis(ds_k_records, target_idx, spoof_configs, K_type_t
         discount_values = [k_type[times.index(t)] for t in discount_times]
         plt.scatter(discount_times, discount_values, marker='x', s=40, label='Sensor Type Discounted by D-S')
 
+    temporal_times = [t for t, a in zip(times, actions) if a == 'temporal_window_conflict_by_DS']
+    if len(temporal_times) > 0:
+        temporal_values = [k_type[times.index(t)] for t in temporal_times]
+        plt.scatter(temporal_times, temporal_values, marker='o', s=30, label='Temporal Window D-S')
+
     font_name = 'Times New Roman'
     plt.xlabel('Time (s)', fontname=font_name, fontsize=16)
     plt.ylabel('Conflict Coefficient', fontname=font_name, fontsize=16)

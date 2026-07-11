@@ -230,11 +230,11 @@ if __name__ == "__main__":
 
 
     # ================= D-S 类型空间融合诊断检查 =================
-    debug_times = [210, 225, 250, 290, 300]
+    debug_times = [99, 100, 101, 102, 103, 104, 105, 159, 160, 161, 162, 163, 164, 165]
 
     print("\n" + "★"*100)
     print(">>> 【D-S 类型空间融合诊断检查】 <<<")
-    print("Time | Target | SensorType | FusedType | K_type | K_after | Action")
+    print("Time | Target | SensorType | FusedType | K_type | K_after | Jump | WinK | Action")
     print("-" * 100)
 
     for ds_debug_time in debug_times:
@@ -249,6 +249,8 @@ if __name__ == "__main__":
                 f"{str(info.get('fused_type', None)):<9} | "
                 f"{info.get('K_type', np.nan):<7.4f} | "
                 f"{info.get('K_type_after', np.nan):<7.4f} | "
+                f"{info.get('jump_score', np.nan):<5.2f} | "
+                f"{info.get('window_conflict', np.nan):<7.4f} | "
                 f"{str(info.get('ds_action', None))}"
             )
 
@@ -265,7 +267,7 @@ if __name__ == "__main__":
         75, 
         90, 110, 130,  # 缺维干扰区间
         150, 
-        210, 225, 250, 290, # 误识干扰区间
+        159, 160, 162, 164, 165, # 误识跳变区间
         300, 375, 450, 525, 600
     ]
     
@@ -273,8 +275,8 @@ if __name__ == "__main__":
         # 添加区间分割线，方便查看
         if t == 90:
             print(f"{'':<8} | {'--- 连续数据缺失区间 (80s - 140s) ---':<40} | {'':<40} |")
-        elif t == 210:
-            print(f"{'':<8} | {'--- 目标类型误识区间 (200s - 300s) ---':<40} | {'':<40} |")
+        elif t == 159:
+            print(f"{'':<8} | {'--- Type jump interval (160s - 164s) ---':<40} | {'':<40} |")
         elif t == 375:
             print(f"{'':<8} | {'--- 干扰结束，常态演化区间 ---':<40} | {'':<40} |")
             
@@ -400,6 +402,12 @@ if __name__ == "__main__":
                 "true_type": truth.get("Type", None),
                 "fused_type": ds_info.get("fused_type", enemy.get("Type", None)),
                 "ds_action": ds_info.get("ds_action", "None"),
+                "jump_score": _safe_float(ds_info.get("jump_score", 0.0)),
+                "jump_count": int(ds_info.get("jump_count", 0) or 0),
+                "has_type_jump": bool(ds_info.get("has_type_jump", False)),
+                "window_size": int(ds_info.get("window_size", 0) or 0),
+                "window_conflict": _safe_float(ds_info.get("window_conflict")),
+                "window_evidence_count": int(ds_info.get("window_evidence_count", 0) or 0),
                 "x": _safe_float(enemy.get("X")),
                 "y": _safe_float(enemy.get("Y")),
                 "z": _safe_float(enemy.get("Z")),
@@ -488,14 +496,14 @@ if __name__ == "__main__":
     plot_utils.plot_ar_imputation(full_time_series, inaccurate_time_series, ar_time_series, target_idx=1, feature='X', missing_configs=missing_configs, start_time=0)
     plt.savefig(os.path.join(save_dir, 'Figure2_AR_Imputation.png'), dpi=300, bbox_inches='tight')
     
-    plot_utils.plot_ds_conflict_diagnosis(k_records, target_idx=0, spoof_configs=misidentification_configs)
+    plot_utils.plot_ds_conflict_diagnosis(k_records, target_idx=4, spoof_configs=misidentification_configs)
     plt.savefig(os.path.join(save_dir, 'Figure3_DS_Diagnosis.png'), dpi=300, bbox_inches='tight')
     
     plot_utils.plot_threat_scores_baseline(full_records)
     plt.savefig(os.path.join(save_dir, 'Figure4_Baseline_Threat.png'), dpi=300, bbox_inches='tight')
     
     # 把 A 和 C 换成真正使用了 AR 填补的 B 和 D
-    plot_utils.plot_ds_restoration(full_records, B_records, D_records, target_idx=0, spoof_configs=misidentification_configs)
+    plot_utils.plot_ds_restoration(full_records, B_records, D_records, target_idx=4, spoof_configs=misidentification_configs)
     plt.savefig(os.path.join(save_dir, 'Figure5_DS_Restoration.png'), dpi=300, bbox_inches='tight')
     
     plot_utils.plot_performance_metrics(summary_df1, summary_df2)

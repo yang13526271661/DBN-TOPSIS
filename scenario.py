@@ -202,7 +202,7 @@ def create_attack_targets():
             attack_altitude=8.80,
         ),
 
-        # T5：F-22，从左前高空高速突防，主要威胁左翼机，后续误识别为 Bomber
+        # T5：F-22，从左前高空高速突防，主要威胁左翼机
         DirectedAttackTarget(
             4, "T5(F-22)", "Fighter", "Strong",
             init_pos=np.array([355.0, -185.0, 9.80]),
@@ -259,7 +259,11 @@ def get_missing_configs():
 
 def get_misidentification_configs():
     return [
-        {'target_idx': 0, 'feature': "Type", 'misidentification': "UAV", 'start': 200, 'end': 300},
-        {'target_idx': 1, 'feature': "Type", 'misidentification': "UAV", 'start': 200, 'end': 260},
-        {'target_idx': 4, 'feature': "Type", 'misidentification': "Bomber", 'start': 240, 'end': 300},    
+        {'target_idx': 4, 'feature': "Type", 'misidentification': "Bomber",  'start': 200, 'end': 202},
+        {'target_idx': 4, 'feature': "Type", 'misidentification': "Bomber",  'start': 204, 'end': 205},
+        {'target_idx': 4, 'feature': "Type", 'misidentification': "Bomber",  'start': 207, 'end': 210},
+
+        {'target_idx': 6, 'feature': "Type", 'misidentification': "Missile", 'start': 250, 'end': 252},
+        {'target_idx': 6, 'feature': "Type", 'misidentification': "Missile", 'start': 254, 'end': 255},
+        {'target_idx': 6, 'feature': "Type", 'misidentification': "Missile", 'start': 257, 'end': 260},
     ]

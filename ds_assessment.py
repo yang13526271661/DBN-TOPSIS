@@ -269,13 +269,97 @@ class DS_Assessment:
         scores = np.asarray(scores, dtype=float) + 1e-12
         return scores / np.sum(scores)
 
+    def type_window_jump_score(self, type_window, jump_threshold=0.10):
+        if not type_window or len(type_window) < 2:
+            return {
+                "jump_score": 0.0,
+                "jump_count": 0,
+                "window_size": len(type_window) if type_window else 0,
+                "has_type_jump": False,
+            }
+
+        sensor_types = [entry.get("sensor_type") for entry in type_window]
+        jump_count = sum(
+            1 for prev, curr in zip(sensor_types[:-1], sensor_types[1:])
+            if prev != curr
+        )
+        jump_score = jump_count / max(len(sensor_types) - 1, 1)
+        return {
+            "jump_score": float(jump_score),
+            "jump_count": int(jump_count),
+            "window_size": len(sensor_types),
+            "has_type_jump": bool(jump_score > jump_threshold),
+        }
+
+    def ds_fuse_temporal_window(
+        self,
+        model,
+        current_sensor_type,
+        evidence_window,
+        current_type_reliability=0.30
+    ):
+        type_score = {
+            'Missile': 100,
+            'Fighter': 88,
+            'Bomber': 74,
+            'Heli': 46,
+            'UAV': 60,
+            'Recon': 38,
+            'Fuel': 22
+        }
+
+        masses = {}
+        if current_sensor_type in type_score:
+            current_id_ev = model.fuzzify_triangle(
+                type_score[current_sensor_type], 30, 60, 90
+            )[::-1]
+            current_id_ev = self._normalize(current_id_ev)
+            p_id = (
+                current_type_reliability * current_id_ev
+                + (1.0 - current_type_reliability) * np.ones(3) / 3.0
+            )
+        else:
+            p_id = np.ones(3) / 3.0
+
+        masses["current_ID"] = self._likelihood_to_mass(p_id, ig=0.05)
+
+        for offset, evidence in enumerate(evidence_window or []):
+            for key, value in evidence.items():
+                if key == "ID":
+                    continue
+                masses[f"t{offset}_{key}"] = self._likelihood_to_mass(value, ig=0.10)
+
+        if len(masses) == 1:
+            fusion_mass = masses["current_ID"]
+            k_total = 0.0
+            local_conflicts = []
+        else:
+            fusion_mass, k_total, local_conflicts = self.ds_fuse_all(masses)
+
+        corrected_id_ev = np.array([
+            fusion_mass.get(1, 0.0) + 0.5 * fusion_mass.get(3, 0.0) + 0.5 * fusion_mass.get(5, 0.0) + fusion_mass.get(7, 0.0) / 3.0,
+            fusion_mass.get(2, 0.0) + 0.5 * fusion_mass.get(3, 0.0) + 0.5 * fusion_mass.get(6, 0.0) + fusion_mass.get(7, 0.0) / 3.0,
+            fusion_mass.get(4, 0.0) + 0.5 * fusion_mass.get(5, 0.0) + 0.5 * fusion_mass.get(6, 0.0) + fusion_mass.get(7, 0.0) / 3.0,
+        ], dtype=float)
+        corrected_id_ev = self._normalize(corrected_id_ev)
+
+        return corrected_id_ev, {
+            "window_conflict": float(k_total),
+            "window_evidence_count": len(masses),
+            "window_fusion_mass": fusion_mass,
+            "window_local_conflicts": local_conflicts,
+        }
+
     def ds_correct_id_evidence_by_type_fusion(
         self,
         model,
         raw_enemy_state,
         sensor_reliability=0.70,
         discounted_reliability=0.30,
-        conflict_discount_th=0.45
+        conflict_discount_th=0.45,
+        type_window=None,
+        evidence_window=None,
+        jump_score_th=0.10
     ):
         """
         D-S 类型空间融合修正模块。
@@ -300,6 +384,7 @@ class DS_Assessment:
         p_kin = self.type_kinematic_mass(raw_enemy_state)
 
         p_fused, K_type = self.ds_combine_prob(p_sensor, p_kin)
+        jump_info = self.type_window_jump_score(type_window, jump_threshold=jump_score_th)
 
         kin_type = type_names[int(np.argmax(p_kin))]
         sensor_score = type_score.get(sensor_type, 60)
@@ -308,13 +393,27 @@ class DS_Assessment:
         # 只在 D-S 冲突大，且运动学支持的类型威胁等级高于传感器类型时，
         # 才折扣传感器 Type。这样可以处理 Missile->UAV、Fighter->Bomber，
         # 同时避免 Missile 等高威胁目标在正常时刻被运动学噪声错误降级。
-        if K_type > conflict_discount_th and kin_score > sensor_score:
+        if jump_info["has_type_jump"]:
+            corrected_id_ev, temporal_info = self.ds_fuse_temporal_window(
+                model=model,
+                current_sensor_type=sensor_type,
+                evidence_window=evidence_window,
+                current_type_reliability=discounted_reliability
+            )
+            p_for_id = corrected_id_ev
+            K_type_after = temporal_info["window_conflict"]
+            ds_action = 'temporal_window_conflict_by_DS'
+        elif K_type > conflict_discount_th and kin_score > sensor_score:
             p_sensor_discounted = self.type_sensor_mass(
                 sensor_type,
                 reliability=discounted_reliability
             )
             p_for_id, K_type_after = self.ds_combine_prob(p_sensor_discounted, p_kin)
             ds_action = 'discount_sensor_type_by_DS'
+            temporal_info = {
+                "window_conflict": np.nan,
+                "window_evidence_count": 0,
+            }
         else:
             # 不满足折扣条件：保留原始传感器 Type 证据，避免正常时刻被 D-S 扰动。
             K_type_after = K_type
@@ -324,23 +423,34 @@ class DS_Assessment:
             else:
                 p_for_id[:] = 1.0 / len(type_names)
             ds_action = 'keep_sensor_type_by_DS'
+            temporal_info = {
+                "window_conflict": np.nan,
+                "window_evidence_count": 0,
+            }
 
-        corrected_id_ev = np.zeros(3, dtype=float)
-        for idx, tp in enumerate(type_names):
-            id_ev_tp = model.fuzzify_triangle(type_score[tp], 30, 60, 90)[::-1]
-            corrected_id_ev += p_for_id[idx] * id_ev_tp
+        if ds_action != 'temporal_window_conflict_by_DS':
+            corrected_id_ev = np.zeros(3, dtype=float)
+            for idx, tp in enumerate(type_names):
+                id_ev_tp = model.fuzzify_triangle(type_score[tp], 30, 60, 90)[::-1]
+                corrected_id_ev += p_for_id[idx] * id_ev_tp
 
-        corrected_id_ev = corrected_id_ev / (np.sum(corrected_id_ev) + 1e-12)
+            corrected_id_ev = corrected_id_ev / (np.sum(corrected_id_ev) + 1e-12)
 
         return corrected_id_ev, {
             'sensor_type': sensor_type,
-            'fused_type': type_names[int(np.argmax(p_for_id))],
+            'fused_type': type_names[int(np.argmax(p_for_id))] if len(p_for_id) == len(type_names) else kin_type,
             'K_type': K_type,
             'K_type_after': K_type_after,
             'ds_action': ds_action,
             'p_sensor': p_sensor,
             'p_kin': p_kin,
             'p_fused': p_for_id,
+            'jump_score': jump_info["jump_score"],
+            'jump_count': jump_info["jump_count"],
+            'window_size': jump_info["window_size"],
+            'has_type_jump': jump_info["has_type_jump"],
+            'window_conflict': temporal_info["window_conflict"],
+            'window_evidence_count': temporal_info["window_evidence_count"],
         }
 
 

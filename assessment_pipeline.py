@@ -64,7 +64,9 @@ def run_formation_dynamic_assessment(
     allow_missing=True,
     beta=0.7,
     lambdas=(0.5, 0.3, 0.2),
-    tau=0.1
+    tau=0.1,
+    temporal_window_size=10,
+    jump_score_th=0.10
 ):
     """
     同构飞机编队威胁评估主流程。
@@ -82,6 +84,9 @@ def run_formation_dynamic_assessment(
     pair_priors = np.tile(model.prior_L, (num_friendly, num_enemy, 1))
     form_priors = np.tile(model.prior_L, (num_enemy, 1))
 
+    type_windows = {j: [] for j in range(num_enemy)}
+    evidence_windows = {j: [] for j in range(num_enemy)}
+
     records = []
 
     for t_idx in range(num_steps):
@@ -98,12 +103,26 @@ def run_formation_dynamic_assessment(
             form_ev = model.fuzzify_target_data(formation_target, allow_missing=allow_missing)
 
             if use_DS:
+                type_windows[j].append({
+                    "time": current_time,
+                    "sensor_type": enemy.get("Type", None),
+                })
+                evidence_windows[j].append({
+                    key: np.asarray(value, dtype=float).copy()
+                    for key, value in form_ev.items()
+                })
+                type_windows[j] = type_windows[j][-temporal_window_size:]
+                evidence_windows[j] = evidence_windows[j][-temporal_window_size:]
+
                 corrected_id_ev, ds_info = ds_model.ds_correct_id_evidence_by_type_fusion(
                     model=model,
                     raw_enemy_state=enemy,
                     sensor_reliability=0.70,
                     discounted_reliability=0.30,
-                    conflict_discount_th=0.45
+                    conflict_discount_th=0.45,
+                    type_window=type_windows[j],
+                    evidence_window=evidence_windows[j],
+                    jump_score_th=jump_score_th
                 )
 
                 fixed_id_evidences[j] = corrected_id_ev
@@ -113,6 +132,12 @@ def run_formation_dynamic_assessment(
                     "K_type": ds_info["K_type"],
                     "K_type_after": ds_info["K_type_after"],
                     "ds_action": ds_info["ds_action"],
+                    "jump_score": ds_info["jump_score"],
+                    "jump_count": ds_info["jump_count"],
+                    "window_size": ds_info["window_size"],
+                    "has_type_jump": ds_info["has_type_jump"],
+                    "window_conflict": ds_info["window_conflict"],
+                    "window_evidence_count": ds_info["window_evidence_count"],
                 }
             else:
                 fixed_id_evidences[j] = form_ev.get("ID", None)

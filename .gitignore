@@ -3,3 +3,8 @@ IFF/__pycache__
 IFF/ds_iff_2026/__pycache__
 
 drafts
+
+.agents
+__pycache__
+
+.gitignore

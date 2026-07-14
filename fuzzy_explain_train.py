@@ -10,12 +10,6 @@ import sys
 
 INPUT_LEVELS = ("low", "medium", "high")
 
-LEVEL_SCORE = {
-    "low": 0.0,
-    "medium": 0.5,
-    "high": 1.0,
-}
-
 INPUT_NAMES = (
     "type",
     "distance",
@@ -47,6 +41,14 @@ INITIAL_TYPE_LEVEL_BONUS = {
     "low": 0.0,
     "medium": 0.0,
     "high": 0.10,
+}
+
+INITIAL_MEDIUM_LEVEL_SCORES = {
+    "type": 0.50,
+    "distance": 0.50,
+    "heading": 0.50,
+    "speed": 0.50,
+    "height": 0.50,
 }
 
 
@@ -217,17 +219,47 @@ def weights_to_logits(weights):
     return np.log(values)
 
 
+def sigmoid(x):
+    """
+    将任意实数映射到 (0, 1)。
+    """
+    x = np.asarray(x, dtype=float)
+
+    # 防止exp溢出
+    x = np.clip(x, -30.0, 30.0)
+
+    return 1.0 / (1.0 + np.exp(-x))
+
+
+def logit(p):
+    """
+    sigmoid的反函数。
+
+    将(0,1)内的medium level score
+    转换为优化器使用的无约束参数。
+    """
+    p = np.asarray(p, dtype=float)
+    p = np.clip(p, 1e-6, 1.0 - 1e-6)
+
+    return np.log(p / (1.0 - p))
+
+
 def unpack_parameters(params):
     """
-    前5个参数通过softmax转换成：
-        非负且总和为1的INPUT_WEIGHTS。
+    params[0:5]
+        5个输入权重的softmax logits
 
-    后2个参数分别是：
-        medium bonus
-        high bonus
+    params[5]
+        medium type-level bonus
+
+    params[6]
+        high type-level bonus
+
+    params[7:12]
+        type、distance、heading、speed、height
+        各自的medium level score logits
     """
     weight_values = softmax(params[:5])
-
     weights = {
         name: float(value)
         for name, value in zip(INPUT_NAMES, weight_values)
@@ -239,30 +271,42 @@ def unpack_parameters(params):
         "high": float(params[6]),
     }
 
-    return weights, bonuses
+    medium_values = sigmoid(params[7:12])
+    medium_level_scores = {
+        name: float(value)
+        for name, value in zip(INPUT_NAMES, medium_values)
+    }
+
+    return weights, bonuses, medium_level_scores
 
 
 # ============================================================
 # 7. Sugeno预测
 # ============================================================
 
-def calculate_rule_consequent(rule, input_weights, type_level_bonus):
+def calculate_rule_consequent(rule, input_weights, type_level_bonus, medium_level_scores):
     """
     计算一条规则的零阶Sugeno后件。
     """
+    type_score = {"low": 0.0, "medium": medium_level_scores["type"], "high": 1.0}
+    distance_score = {"low": 0.0, "medium": medium_level_scores["distance"], "high": 1.0}
+    heading_score = {"low": 0.0, "medium": medium_level_scores["heading"], "high": 1.0}
+    speed_score = {"low": 0.0, "medium": medium_level_scores["speed"], "high": 1.0}
+    height_score = {"low": 0.0, "medium": medium_level_scores["height"], "high": 1.0}
+
     consequent = (
-        input_weights["type"] * LEVEL_SCORE[rule["type_level"]]
-        + input_weights["distance"] * LEVEL_SCORE[rule["distance_level"]]
-        + input_weights["heading"] * LEVEL_SCORE[rule["heading_level"]]
-        + input_weights["speed"] * LEVEL_SCORE[rule["speed_level"]]
-        + input_weights["height"] * LEVEL_SCORE[rule["height_level"]]
+        input_weights["type"] * type_score[rule["type_level"]]
+        + input_weights["distance"] * distance_score[rule["distance_level"]]
+        + input_weights["heading"] * heading_score[rule["heading_level"]]
+        + input_weights["speed"] * speed_score[rule["speed_level"]]
+        + input_weights["height"] * height_score[rule["height_level"]]
         + type_level_bonus[rule["type_level"]]
     )
 
     return float(np.clip(consequent, 0.0, 1.0))
 
 
-def predict_prepared_sample(sample, input_weights, type_level_bonus):
+def predict_prepared_sample(sample, input_weights, type_level_bonus, medium_level_scores):
     """
     使用完整243条规则计算单个样本的Sugeno分数。
     """
@@ -284,6 +328,7 @@ def predict_prepared_sample(sample, input_weights, type_level_bonus):
             rule=rule,
             input_weights=input_weights,
             type_level_bonus=type_level_bonus,
+            medium_level_scores=medium_level_scores,
         )
 
         firing_strength_sum += firing_strength
@@ -307,14 +352,23 @@ def objective_function(
     regularization,
     initial_weights,
     initial_bonuses,
+    initial_medium_scores,
+    fixed_weights=None,
+    fixed_bonuses=None,
+    fixed_medium_scores=None,
 ):
-    weights, bonuses = unpack_parameters(params)
+    decoded_weights, decoded_bonuses, decoded_medium_scores = unpack_parameters(params)
+
+    weights = fixed_weights if fixed_weights is not None else decoded_weights
+    bonuses = fixed_bonuses if fixed_bonuses is not None else decoded_bonuses
+    medium_scores = fixed_medium_scores if fixed_medium_scores is not None else decoded_medium_scores
 
     predictions = np.asarray([
         predict_prepared_sample(
             sample,
             input_weights=weights,
             type_level_bonus=bonuses,
+            medium_level_scores=medium_scores,
         )
         for sample in train_samples
     ])
@@ -338,48 +392,30 @@ def objective_function(
     # 保证 high bonus 不小于 medium bonus
     order_penalty = max(0.0, bonuses["medium"] - bonuses["high"]) ** 2
 
+    level_score_penalty = sum(
+        (medium_scores[name] - initial_medium_scores[name]) ** 2
+        for name in INPUT_NAMES
+    )
+
+    # 避免medium过度贴近0或1
+    boundary_penalty = sum(
+        max(0.0, 0.10 - medium_scores[name]) ** 2
+        + max(0.0, medium_scores[name] - 0.90) ** 2
+        for name in INPUT_NAMES
+    )
+
     return float(
         mse
         + regularization * weight_penalty
         + regularization * bonus_penalty
         + 10.0 * order_penalty
+        + regularization * level_score_penalty
+        + regularization * boundary_penalty
     )
 
 
 # ============================================================
-# 9. 评价函数
-# ============================================================
-
-def evaluate_parameters(samples, weights, bonuses):
-    if not samples:
-        return {
-            "count": 0,
-            "rmse": None,
-            "max_absolute_error": None,
-        }
-
-    observed = np.asarray([sample["observed_score"] for sample in samples])
-
-    predicted = np.asarray([
-        predict_prepared_sample(
-            sample,
-            input_weights=weights,
-            type_level_bonus=bonuses,
-        )
-        for sample in samples
-    ])
-
-    errors = predicted - observed
-
-    return {
-        "count": len(samples),
-        "rmse": float(np.sqrt(np.mean(errors ** 2))),
-        "max_absolute_error": float(np.max(np.abs(errors))),
-    }
-
-
-# ============================================================
-# 10. 主接口
+# 9. 主接口
 # ============================================================
 
 def fit_sugeno_parameters(
@@ -387,29 +423,25 @@ def fit_sugeno_parameters(
     time_series,
     train_ratio=0.8,
     regularization=0.001,
-    maxiter=50,
+    stage1_maxiter=50,
+    stage2_maxiter=30,
+    stage3_maxiter=30,
     verbose=True,
 ):
     """
-    根据records和time_series自动拟合：
+    三阶段拟合：
 
-        INPUT_WEIGHTS
-        TYPE_LEVEL_BONUS
+    阶段1：
+        优化 INPUT_WEIGHTS 和 TYPE_LEVEL_BONUS；
+        固定 medium LEVEL_SCORE。
 
-    参数
-    ----
-    records, time_series:
-        原始records和time_series数据。
+    阶段2：
+        固定阶段1得到的权重和Bonus；
+        优化每个变量的medium LEVEL_SCORE。
 
-    train_ratio:
-        按时间顺序，前多少比例时刻用于训练。
-        默认0.8。
-
-    regularization:
-        正则化强度，防止参数偏离初始设置过大。
-
-    maxiter:
-        最大优化迭代次数。
+    阶段3：
+        以阶段1、阶段2结果为初值，
+        联合微调所有参数。
     """
     
     if len(records) < 2:
@@ -434,59 +466,84 @@ def fit_sugeno_parameters(
         extract_samples(validation_records, validation_time_series)
     )
 
-    initial_logits = weights_to_logits(INITIAL_WEIGHTS)
+    def build_initial_parameter_vector(
+        initial_weights,
+        initial_bonuses,
+        initial_medium_scores,
+    ):
+        weight_logits = weights_to_logits(initial_weights)
 
-    initial_params = np.concatenate([
-        initial_logits,
-        np.asarray([
-            INITIAL_TYPE_LEVEL_BONUS["medium"],
-            INITIAL_TYPE_LEVEL_BONUS["high"],
-        ]),
-    ])
+        medium_score_logits = logit(
+            np.asarray([
+                initial_medium_scores[name]
+                for name in INPUT_NAMES
+            ])
+        )
+        return np.concatenate([
+            weight_logits,
+            np.asarray([
+                initial_bonuses["medium"],
+                initial_bonuses["high"],
+            ]),
+            medium_score_logits,
+        ])
+
+    initial_params = build_initial_parameter_vector(
+        INITIAL_WEIGHTS,
+        INITIAL_TYPE_LEVEL_BONUS,
+        INITIAL_MEDIUM_LEVEL_SCORES,
+    )
 
     # 前5项是softmax参数，无需边界；
-    # medium和high bonus设置合理范围。
+    # medium和high bonus设置合理范围；
+    # 后5项是sigmoid，无需边界。
     bounds = [
+        # weights
         (None, None),
         (None, None),
         (None, None),
         (None, None),
         (None, None),
+        # type level bonus
         (-0.10, 0.20),  # medium bonus
         (0.00, 0.35),   # high bonus
+        # medium level scores
+        (None, None),
+        (None, None),
+        (None, None),
+        (None, None),
+        (None, None),
     ]
 
-    initial_train_metrics = evaluate_parameters(
-        train_samples,
-        weights=INITIAL_WEIGHTS,
-        bonuses=INITIAL_TYPE_LEVEL_BONUS,
-    )
+    # --------------------------------------------------------
+    # 阶段1：优化权重和bonus
+    # --------------------------------------------------------
+    print("\n" + "=" * 75)
+    print("阶段1：优化 INPUT_WEIGHTS 和 TYPE_LEVEL_BONUS")
+    print("=" * 75)
 
-    initial_validation_metrics = evaluate_parameters(
-        validation_samples,
-        weights=INITIAL_WEIGHTS,
-        bonuses=INITIAL_TYPE_LEVEL_BONUS,
-    )
+    stage1_state = {"count": 0}
 
-    iteration_state = {"count": 0}
+    def stage1_callback(xk):
+        stage1_state["count"] += 1
 
-    def optimization_callback(xk):
-        iteration_state["count"] += 1
         current_loss = objective_function(
             xk,
             train_samples,
             regularization,
             INITIAL_WEIGHTS,
             INITIAL_TYPE_LEVEL_BONUS,
+            INITIAL_MEDIUM_LEVEL_SCORES,
         )
-        if iteration_state["count"] % 10 == 0 or iteration_state["count"] == 1:
+
+        if stage1_state["count"] % 10 == 0 or stage1_state["count"] == 1:
             print(
-                f"\r迭代轮数: {iteration_state['count']:4d} | "
+                f"\r阶段1迭代轮数: {stage1_state['count']:4d} | "
                 f"当前损失: {current_loss:.8f} | ",
                 flush=True,
             )
 
-    optimization_result = minimize(
+    stage1_result = minimize(
         objective_function,
         x0=initial_params,
         args=(
@@ -494,43 +551,148 @@ def fit_sugeno_parameters(
             regularization,
             INITIAL_WEIGHTS,
             INITIAL_TYPE_LEVEL_BONUS,
+            INITIAL_MEDIUM_LEVEL_SCORES,
+            None,                   # weights可优化
+            None,                   # bonuses可优化
+            INITIAL_MEDIUM_LEVEL_SCORES,  # 固定level score
         ),
         method="L-BFGS-B",
         bounds=bounds,
         options={
-            "maxiter": int(maxiter),
+            "maxiter": int(stage1_maxiter),
             "ftol": 1e-12,
             "gtol": 1e-8,
             "disp": False,
         },
-        callback=optimization_callback,
+        callback=stage1_callback,
     )
 
-    best_weights, best_bonuses = unpack_parameters(
-        optimization_result.x
+    stage1_weights, stage1_bonuses, _ = unpack_parameters(stage1_result.x)
+
+    # --------------------------------------------------------
+    # 阶段2：固定权重和bonus，优化medium LEVEL_SCORE
+    # --------------------------------------------------------
+    print("\n" + "=" * 75)
+    print("阶段2：优化各变量的 medium LEVEL_SCORE")
+    print("=" * 75)
+
+    stage2_initial_params = build_initial_parameter_vector(
+        stage1_weights,
+        stage1_bonuses,
+        INITIAL_MEDIUM_LEVEL_SCORES,
     )
 
-    train_metrics = evaluate_parameters(
-        train_samples,
-        weights=best_weights,
-        bonuses=best_bonuses,
+    stage2_state = {"count": 0}
+
+    def stage2_callback(xk):
+        stage2_state["count"] += 1
+
+        current_loss = objective_function(
+            xk,
+            train_samples,
+            regularization,
+            INITIAL_WEIGHTS,
+            INITIAL_TYPE_LEVEL_BONUS,
+            INITIAL_MEDIUM_LEVEL_SCORES,
+        )
+
+        if stage2_state["count"] % 10 == 0 or stage2_state["count"] == 1:
+            print(
+                f"\r阶段2迭代轮数: {stage2_state['count']:4d} | "
+                f"当前损失: {current_loss:.8f} | ",
+                flush=True,
+            )
+
+    stage2_result = minimize(
+        objective_function,
+        x0=stage2_initial_params,
+        args=(
+            train_samples,
+            regularization,
+            INITIAL_WEIGHTS,
+            INITIAL_TYPE_LEVEL_BONUS,
+            INITIAL_MEDIUM_LEVEL_SCORES,
+            stage1_weights,    # 固定权重
+            stage1_bonuses,    # 固定bonus
+            None,              # level score可优化
+        ),
+        method="L-BFGS-B",
+        bounds=bounds,
+        options={
+            "maxiter": int(stage2_maxiter),
+            "ftol": 1e-12,
+            "gtol": 1e-8,
+            "disp": False,
+        },
+        callback=stage2_callback,
     )
 
-    validation_metrics = evaluate_parameters(
-        validation_samples,
-        weights=best_weights,
-        bonuses=best_bonuses,
+    _, _, stage2_medium_scores = unpack_parameters(stage2_result.x)
+
+    # --------------------------------------------------------
+    # 阶段3：联合微调所有参数
+    # --------------------------------------------------------
+    print("\n" + "=" * 75)
+    print("阶段3：联合微调全部参数")
+    print("=" * 75)
+
+    stage3_initial_params = build_initial_parameter_vector(
+        stage1_weights,
+        stage1_bonuses,
+        stage2_medium_scores,
     )
+
+    stage3_state = {"count": 0}
+
+    def stage3_callback(xk):
+        stage3_state["count"] += 1
+
+        current_loss = objective_function(
+            xk,
+            train_samples,
+            regularization,
+            INITIAL_WEIGHTS,
+            INITIAL_TYPE_LEVEL_BONUS,
+            INITIAL_MEDIUM_LEVEL_SCORES,
+        )
+
+        if stage3_state["count"] % 10 == 0 or stage3_state["count"] == 1:
+            print(
+                f"\r阶段3迭代轮数: {stage3_state['count']:4d} | "
+                f"当前损失: {current_loss:.8f} | ",
+                flush=True,
+            )
+
+    stage3_result = minimize(
+        objective_function,
+        x0=stage3_initial_params,
+        args=(
+            train_samples,
+            regularization,
+            stage1_weights,
+            stage1_bonuses,
+            stage2_medium_scores,
+            None,
+            None,
+            None,
+        ),
+        method="L-BFGS-B",
+        bounds=bounds,
+        options={
+            "maxiter": int(stage3_maxiter),
+            "ftol": 1e-12,
+            "gtol": 1e-8,
+            "disp": False,
+        },
+        callback=stage3_callback,
+    )
+
+    best_weights, best_bonuses, best_medium_scores = unpack_parameters(stage3_result.x)
 
     if verbose:
-        print("=" * 70)
+        print("\n" + "=" * 70)
         print("Sugeno参数拟合结果")
         print("=" * 70)
-
-        print(f"优化成功：{bool(optimization_result.success)}")
-        print(f"优化信息：{str(optimization_result.message)}")
-        iteration_num = int(getattr(optimization_result, "nit", 0))
-        print(f"迭代次数：{iteration_num}")
 
         print("\n最优 INPUT_WEIGHTS：")
         for name, value in best_weights.items():
@@ -540,16 +702,8 @@ def fit_sugeno_parameters(
         for name, value in best_bonuses.items():
             print(f"    {name!r}: {value:.6f},")
 
-        print("\n初始参数训练集指标：")
-        print(initial_train_metrics)
+        print("\n最优 MEDIUM_LEVEL_SCORES：")
+        for name, value in best_medium_scores.items():
+            print(f"    {name!r}: {value:.6f},")
 
-        print("\n优化后训练集指标：")
-        print(train_metrics)
-
-        print("\n初始参数验证集指标：")
-        print(initial_validation_metrics)
-
-        print("\n优化后验证集指标：")
-        print(validation_metrics)
-    
     sys.exit(0)

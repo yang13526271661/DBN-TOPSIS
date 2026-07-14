@@ -137,11 +137,11 @@ def run_formation_dynamic_assessment(
 
                 ttc_factor = 1.0 / (1.0 + ttc / 120.0)
                 dist_factor = 1.0 / (1.0 + dist / 120.0)
-                vc_factor = max(vc, 0.0) / 0.340
+                # vc_factor = max(vc, 0.0) / 0.340
+                vc_factor = vc / (vc + 0.340 + 1e-10)
 
                 local_factor = (
-                    1.0
-                    + 0.35 * ttc_factor
+                    0.35 * ttc_factor
                     + 0.20 * dist_factor
                     + 0.10 * vc_factor
                 )
@@ -169,9 +169,17 @@ def run_formation_dynamic_assessment(
             prob_matrix_i = np.array(prob_matrix_i)
             raw_pair_scores = topsis_closeness(prob_matrix_i)
             local_factors_i = np.array(local_factors_i, dtype=float)
+            
+            # 局部几何双向修正
+            local_delta = local_factors_i - np.mean(local_factors_i)
+            gamma_local = 1.5  # 修正强度
+            local_adjust_factor = np.exp(gamma_local * local_delta)  # 指数型扰动因子
+
+            pair_scores[i, :] = raw_pair_scores * local_adjust_factor
+            pair_scores[i, :] = np.clip(pair_scores[i, :], 0.0, 1.0)
 
             # 注意：这里不归一化，因为后面 c_max/c_avg/c_soft 会统一归一化。
-            pair_scores[i, :] = raw_pair_scores * local_factors_i
+            # pair_scores[i, :] = raw_pair_scores * local_factors_i
             
         # 编队整体分支
         form_posteriors = np.zeros((num_enemy, 3), dtype=float)
@@ -190,32 +198,32 @@ def run_formation_dynamic_assessment(
             form_posteriors[j] = posterior
             form_priors[j] = posterior @ model.transition_matrix
 
-        form_scores_raw = topsis_closeness(form_posteriors)
-        form_scores = normalize_scores(form_scores_raw)
+        form_scores = topsis_closeness(form_posteriors)
+        # form_scores = normalize_scores(form_scores_raw)
 
-        # 编队结构修正：覆盖比例越大、TTC越小，整体威胁越高
-        structure_factors = []
-        for ft in form_targets_debug:
-            cover = ft.get("CoverRatio", 0.0)
-            ttc = ft.get("TTC_min", 1e6)
+        # # 编队结构修正：覆盖比例越大、TTC越小，整体威胁越高
+        # structure_factors = []
+        # for ft in form_targets_debug:
+        #     cover = ft.get("CoverRatio", 0.0)
+        #     ttc = ft.get("TTC_min", 1e6)
 
-            ttc_factor = 1.0 / (1.0 + ttc / 100.0)
-            cover_factor = cover
+        #     ttc_factor = 1.0 / (1.0 + ttc / 100.0)
+        #     cover_factor = cover
 
-            factor = 1.0 + 0.3 * cover_factor + 0.3 * ttc_factor
-            structure_factors.append(factor)
+        #     factor = 1.0 + 0.3 * cover_factor + 0.3 * ttc_factor
+        #     structure_factors.append(factor)
 
-        structure_factors = np.array(structure_factors)
-        form_scores = normalize_scores(form_scores * structure_factors)
+        # structure_factors = np.array(structure_factors)
+        # form_scores = normalize_scores(form_scores * structure_factors)
 
         # 单机威胁矩阵聚合
         c_max = np.max(pair_scores, axis=0)
         c_avg = np.mean(pair_scores, axis=0)
         c_soft = tau * np.log(np.mean(np.exp(pair_scores / tau), axis=0) + 1e-10)
 
-        c_max = normalize_scores(c_max)
-        c_avg = normalize_scores(c_avg)
-        c_soft = normalize_scores(c_soft)
+        # c_max = normalize_scores(c_max)
+        # c_avg = normalize_scores(c_avg)
+        # c_soft = normalize_scores(c_soft)
 
         lambda_max, lambda_avg, lambda_soft = lambdas
         agg_scores = (
@@ -223,11 +231,10 @@ def run_formation_dynamic_assessment(
             + lambda_avg * c_avg
             + lambda_soft * c_soft
         )
-        agg_scores = normalize_scores(agg_scores)
+        # agg_scores = normalize_scores(agg_scores)
 
         # 最终整体编队威胁度
         total_scores = beta * form_scores + (1.0 - beta) * agg_scores
-        total_scores = normalize_scores(total_scores)
 
         rank = np.argsort(total_scores)[::-1] + 1
 

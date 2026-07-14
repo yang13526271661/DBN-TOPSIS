@@ -21,6 +21,8 @@ from scenario import (
     get_missing_configs,
     get_misidentification_configs,
 )
+from fuzzy_explain import reverse_sugeno_from_records
+from fuzzy_explain_train import fit_sugeno_parameters
 
 
 if __name__ == "__main__":
@@ -126,6 +128,10 @@ if __name__ == "__main__":
         allow_missing=False,
         beta=0.7
     )
+
+    # [步骤 6]: 根据 D_records 进行模糊化逆向解释，生成每个目标的模糊化威胁度解释报告 
+    # fit_sugeno_parameters(D_records, ar_time_series)
+    sugeno_result = reverse_sugeno_from_records(D_records, ar_time_series)
 
     # ================= 以上是你代码的 步骤 5 =================
 
@@ -380,6 +386,7 @@ if __name__ == "__main__":
         enemy_states = ar_time_series[t]       # 算法实际看到/修复后的状态
         enemy_truth = full_time_series[t]      # 无干扰真实状态
         friendlies = friendly_series[t]
+        results = sugeno_result[t]["targets"]
 
         total_scores = np.asarray(rec["scores"], dtype=float)
         form_scores_v = np.asarray(rec["form_scores"], dtype=float)
@@ -389,6 +396,7 @@ if __name__ == "__main__":
         enemies_vis = []
         for j, enemy in enumerate(enemy_states):
             truth = enemy_truth[j]
+            result = results[j]
             ds_info = rec.get("ds_k", {}).get(j, {})
 
             enemies_vis.append({
@@ -412,6 +420,8 @@ if __name__ == "__main__":
                 "total_score": _safe_float(total_scores[j]),
                 "form_score": _safe_float(form_scores_v[j]),
                 "agg_score": _safe_float(agg_scores_v[j]),
+                "threat_level": result.get("threat_level"),
+                "description": result.get("description"),
             })
 
         friendlies_vis = []

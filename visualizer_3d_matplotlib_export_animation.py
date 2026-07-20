@@ -59,18 +59,19 @@ TAIL_LEN_DEFAULT = 50
 # 箭头含义：目标当前速度方向；箭头长度按目标速度大小缩放。
 # 这里不用把速度向量直接乘很大倍数，而是先归一化方向，再给一个受限的长度，
 # 避免箭头过粗、过长、遮挡目标。
-VELOCITY_ARROW_COLOR = "red"
+VELOCITY_ARROW_COLOR = "0.25"
 # 箭头总长度 = 横线长度 + 小箭头头部长度。
 # 用“横线长短”表达速度大小，而不是把整个箭头画得很粗很大。
 VELOCITY_ARROW_MIN_LEN = 3.0       # km，低速目标也能看见
 VELOCITY_ARROW_MAX_LEN = 13.0      # km，防止高速目标箭头过长
 VELOCITY_ARROW_LEN_PER_MACH = 4.2  # 每 1 Mach 增加的箭头长度
-VELOCITY_ARROW_WIDTH = 0.45        # 箭杆细一点，避免遮挡目标
-VELOCITY_ARROW_HEAD_RATIO = 0.12   # 箭头头部小一点，主要靠横线长度表达速度
-VELOCITY_ARROW_ALPHA = 0.78
-VELOCITY_ARROW_START_GAP = 2.0     # km，箭头从目标前方一点开始画，避免盖住图标
+VELOCITY_ARROW_WIDTH = 0.28        # 箭杆细一点，避免遮挡目标
+VELOCITY_ARROW_HEAD_RATIO = 0.08   # 箭头头部小一点，主要靠横线长度表达速度
+VELOCITY_ARROW_ALPHA = 0.42
+VELOCITY_ARROW_START_GAP = 8.0     # km，箭头从目标前方一点开始画，避免盖住图标
 
-TEXT_Z_OFFSET = 2.0
+FRIENDLY_LABEL_Z_OFFSET = 2.0
+ENEMY_LABEL_Z_OFFSET = 0.7
 
 # 只保留当前场景实际用到的 6 类图标
 ICON_FILES = {
@@ -80,6 +81,8 @@ ICON_FILES = {
     "Bomber": "bomber.png",
     "Heli": "helicopter.png",
     "UAV": "uav.png",
+    "Recon": "recon.png",
+    "Fuel": "fuel.png",
     "Unknown": "enemy_fighter.png",
 }
 
@@ -95,6 +98,8 @@ ICON_WORLD_SIZES = {
     "Bomber": 25.0,
     "Heli": 18.0,
     "UAV": 16.0,
+    "Recon": 18.0,
+    "Fuel": 23.0,
     "Unknown": 17.0,
 }
 
@@ -112,8 +117,110 @@ TYPE_COLORS = {
     "Bomber": "tab:purple",
     "Heli": "tab:green",
     "UAV": "tab:gray",
+    "Recon": "tab:cyan",
+    "Fuel": "tab:brown",
     "Unknown": "black",
 }
+
+TRAIL_COLORS = {
+    **TYPE_COLORS,
+    "Missile": "#b00020",
+    "Fighter": "#e6862a",
+    "Recon": "#00a6b2",
+    "Fuel": "#8c564b",
+    "Unknown": "0.25",
+}
+
+DEFAULT_TRAIL_STYLE = {"alpha": 0.55, "linewidth": 1.8, "linestyle": "-"}
+SCENE_B_FEINT_TRAIL_STYLE = {
+    "color": "#d97706",
+    "alpha": 0.92,
+    "linewidth": 2.8,
+    "linestyle": "-",
+}
+TRAIL_STYLES = {
+    "Missile": {"alpha": 0.95, "linewidth": 2.8, "linestyle": "-"},
+    "Fighter": {"alpha": 0.48, "linewidth": 1.6, "linestyle": "-"},
+    "Bomber": {"alpha": 0.52, "linewidth": 1.7, "linestyle": "-"},
+    "UAV": {"alpha": 0.50, "linewidth": 1.5, "linestyle": "-"},
+    "Heli": {"alpha": 0.50, "linewidth": 1.5, "linestyle": "-"},
+    "Recon": {"alpha": 0.46, "linewidth": 1.4, "linestyle": "-"},
+    "Fuel": {"alpha": 0.46, "linewidth": 1.4, "linestyle": "-"},
+}
+
+TYPE_DISPLAY_NAMES = {
+    "FriendlyFighter": "Friendly fighter",
+    "Missile": "Missile",
+    "Fighter": "Enemy fighter",
+    "Bomber": "Bomber",
+    "Heli": "Helicopter",
+    "UAV": "UAV",
+    "Recon": "Recon",
+    "Fuel": "Fuel",
+    "Unknown": "Unknown",
+}
+
+
+FRIENDLY_ROLE_STYLES = {
+    "Leader": {
+        "display": "Leader",
+        "abbr": "L",
+        "color": "#D62728",
+        "marker": "D",
+        "linewidth": 3.2,
+        "linestyle": "-",
+        "zoom": 1.18,
+    },
+    "LeftWing": {
+        "display": "Left",
+        "abbr": "LW",
+        "color": "#1F77B4",
+        "marker": "o",
+        "linewidth": 2.3,
+        "linestyle": "-",
+        "zoom": 1.0,
+    },
+    "RightWing": {
+        "display": "Right",
+        "abbr": "RW",
+        "color": "#2CA02C",
+        "marker": "^",
+        "linewidth": 2.3,
+        "linestyle": "-",
+        "zoom": 1.0,
+    },
+    "RearGuard": {
+        "display": "Rear",
+        "abbr": "RG",
+        "color": "#9467BD",
+        "marker": "s",
+        "linewidth": 2.5,
+        "linestyle": "--",
+        "zoom": 1.05,
+    },
+    "Member": {
+        "display": "Homogeneous member",
+        "abbr": "",
+        "color": "tab:blue",
+        "marker": "o",
+        "linewidth": 2.2,
+        "linestyle": "-",
+        "zoom": 1.0,
+    },
+}
+
+
+def get_friendly_role(friendly: dict):
+    role = str(friendly.get("role") or friendly.get("Role") or "Member")
+    return role if role in FRIENDLY_ROLE_STYLES else "Member"
+
+
+def get_friendly_role_style(friendly: dict):
+    return FRIENDLY_ROLE_STYLES[get_friendly_role(friendly)]
+
+
+def has_heterogeneous_friendly_roles(record: dict):
+    return any(get_friendly_role(f) != "Member" for f in record.get("friendlies", []))
 
 
 # =========================
@@ -199,21 +306,59 @@ def normalize_type(tp: str) -> str:
 def get_enemy_display_type(enemy: dict) -> str:
     """
     当前可视化显示类型：
-    如果 D-S 做了类型修正，则优先显示 fused_type；
-    否则显示 sensor_type / Type / type。
+    优先显示场景设定/真实类型，避免 D-S 的 fused_type 把图标改成另一类目标。
+    D-S 修正结果仍然在右侧信息栏中展示。
     """
-    ds_action = enemy.get("ds_action", "")
-    if ds_action == "discount_sensor_type_by_DS" and enemy.get("fused_type"):
-        return normalize_type(str(enemy.get("fused_type")))
-
     tp = str(
-        enemy.get("sensor_type")
+        enemy.get("display_type")
+        or enemy.get("true_type")
+        or enemy.get("sensor_type")
         or enemy.get("Type")
         or enemy.get("type")
         or enemy.get("fused_type")
         or "Unknown"
     )
     return normalize_type(tp)
+
+
+def uses_full_history_trail(enemy: dict) -> bool:
+    """Scene-B T2 keeps its complete approach-turn-departure trajectory."""
+    return enemy.get("small_scene_id") == "B_M2"
+
+
+def freeze_enemy_display_types(records):
+    """
+    Freeze one visual type per target label for the whole animation.
+
+    Sensor and D-S fused types may change during misidentification intervals.  The
+    icon should represent the scenario/true platform type, so we resolve it once
+    and store it as display_type on every frame.
+    """
+    type_by_label = {}
+
+    for record in records:
+        for enemy in record.get("enemies", []):
+            label = enemy.get("label")
+            if not label or label in type_by_label:
+                continue
+
+            raw_tp = (
+                enemy.get("true_type")
+                or enemy.get("sensor_type")
+                or enemy.get("Type")
+                or enemy.get("type")
+                or enemy.get("fused_type")
+                or "Unknown"
+            )
+            type_by_label[label] = normalize_type(str(raw_tp))
+
+    for record in records:
+        for enemy in record.get("enemies", []):
+            label = enemy.get("label")
+            if label in type_by_label:
+                enemy["display_type"] = type_by_label[label]
+
+    return type_by_label
 
 
 def fallback_icon_image(tp: str):
@@ -231,6 +376,8 @@ def fallback_icon_image(tp: str):
         "Bomber": (126, 63, 181, 235),
         "Heli": (42, 160, 84, 235),
         "UAV": (105, 112, 122, 235),
+        "Recon": (0, 166, 178, 235),
+        "Fuel": (140, 86, 75, 235),
         "Unknown": (40, 40, 40, 235),
     }
     fill = fill_by_type.get(tp, fill_by_type["Unknown"])
@@ -240,12 +387,18 @@ def fallback_icon_image(tp: str):
     if tp == "Missile":
         body = [
             (center, pad),
-            (size - pad - 1, size - pad - 1),
-            (center, size - pad - 4),
-            (pad, size - pad - 1),
+            (center + 4, pad + 7),
+            (center + 3, size - pad - 9),
+            (center + 8, size - pad - 3),
+            (center + 2, size - pad - 5),
+            (center, size - pad),
+            (center - 2, size - pad - 5),
+            (center - 8, size - pad - 3),
+            (center - 3, size - pad - 9),
+            (center - 4, pad + 7),
         ]
         draw.polygon(body, fill=fill, outline=outline)
-        draw.line((center, pad + 4, center, size - pad - 5), fill=highlight, width=1)
+        draw.line((center, pad + 6, center, size - pad - 7), fill=highlight, width=1)
     elif tp == "Bomber":
         body = [
             (center, pad),
@@ -276,6 +429,23 @@ def fallback_icon_image(tp: str):
         ]
         draw.polygon(body, fill=fill, outline=outline)
         draw.line((pad + 4, center, size - pad - 4, center), fill=highlight, width=1)
+    elif tp == "Recon":
+        draw.ellipse((pad + 2, center - 6, size - pad - 2, center + 6), fill=fill, outline=outline)
+        draw.ellipse((center - 4, center - 4, center + 4, center + 4), fill=highlight, outline=outline)
+        draw.line((center, pad, center, center - 6), fill=outline, width=2)
+        draw.line((center, center + 6, center, size - pad), fill=outline, width=2)
+    elif tp == "Fuel":
+        body = [
+            (center, pad),
+            (size - pad, center + 2),
+            (center + 4, center + 5),
+            (center + 3, size - pad),
+            (center - 3, size - pad),
+            (center - 4, center + 5),
+            (pad, center + 2),
+        ]
+        draw.polygon(body, fill=fill, outline=outline)
+        draw.rectangle((center - 2, pad + 5, center + 2, size - pad - 5), fill=highlight)
     else:
         body = [
             (center, pad),
@@ -308,6 +478,11 @@ def load_icon_image(tp: str):
     tp = normalize_type(tp)
     if tp in ICON_CACHE:
         return ICON_CACHE[tp]
+
+    if tp == "Missile":
+        arr = fallback_icon_image(tp)
+        ICON_CACHE[tp] = arr
+        return arr
 
     filename = ICON_FILES.get(tp, ICON_FILES["Unknown"])
     icon_path = ICON_DIR / filename
@@ -492,8 +667,8 @@ def build_info_text(record: dict):
         reverse=True,
     )
 
-    lines.append("[Top targets]")
-    for e in enemies[:5]:
+    lines.append("[All target threat scores]")
+    for e in enemies:
         score = safe_float(e.get("total_score"), 0.0)
         tp = get_enemy_display_type(e)
         sensor = e.get("sensor_type") or e.get("Type") or e.get("type")
@@ -502,6 +677,9 @@ def build_info_text(record: dict):
         suffix = f"({tp})"
         if ds_action == "discount_sensor_type_by_DS":
             suffix += f"  DS:{sensor}->{fused}"
+        frf = e.get("formation_risk_factor")
+        if frf is not None:
+            suffix += f"  FRF={safe_float(frf, 0.0):.2f}"
         lines.append(f"{e.get('label')}: {score:.4f} {suffix}")
     lines.append("")
 
@@ -517,16 +695,58 @@ def build_info_text(record: dict):
             if pair.ndim == 2 and i < pair.shape[0]:
                 order = np.argsort(pair[i])[::-1]
                 rank = " > ".join(labels[j] for j in order)
-                lines.append(f"{f.get('label', 'F'+str(i+1))}: {rank}")
+                friendly_label = f.get("label", "F" + str(i + 1))
+                role = get_friendly_role(f)
+                if role != "Member":
+                    friendly_label += f"[{FRIENDLY_ROLE_STYLES[role]['abbr']}]"
+                lines.append(f"{friendly_label}: {rank}")
 
     lines.append("")
 
+    capability_members = [
+        f for f in record.get("friendlies", []) if f.get("capability_event")
+    ]
+    if capability_members:
+        lines.append("[Friendly capability state]")
+        for f in capability_members:
+            role = get_friendly_role(f)
+            role_abbr = FRIENDLY_ROLE_STYLES[role]["abbr"]
+            state = f.get("capability_state", "Healthy")
+            vulnerability = safe_float(f.get("vulnerability"), 1.0)
+            maneuverability = safe_float(f.get("maneuverability"), 1.0)
+            weight = safe_float(f.get("aggregation_weight"), 0.0)
+            lines.append(
+                f"{f.get('label', 'F')}[{role_abbr}] {state}: "
+                f"V={vulnerability:.2f} M={maneuverability:.2f} w={weight:.3f}"
+            )
+        lines.append("")
+
     event_lines = []
+    for f in record.get("friendlies", []):
+        state = f.get("capability_state", "Healthy")
+        if state in ("Degrading", "Degraded"):
+            damage_level = 100.0 * safe_float(f.get("damage_level"), 0.0)
+            event_lines.append(
+                f"{f.get('label', 'F')} capability {state}: {damage_level:.0f}%"
+            )
+
     for e in record.get("enemies", []):
         if e.get("ds_action") == "discount_sensor_type_by_DS":
             event_lines.append(
                 f"D-S corrected {e.get('label')}: {e.get('sensor_type')} -> {e.get('fused_type')}"
             )
+        if e.get("intent_switch"):
+            configured = e.get("configured_intent") or "Unknown"
+            current = e.get("intent_gt") or "Unknown"
+            predicted = e.get("predicted_intent") or "Unknown"
+            phase = e.get("intent_phase") or "Unknown"
+            turn_percent = 100.0 * safe_float(e.get("turn_progress"), 0.0)
+            event_lines.append(
+                f"Intent {e.get('label')}: GT={current}, Pred={predicted}"
+            )
+            if current != configured:
+                phase += f" -> {configured}"
+            event_lines.append(f"Phase={phase}, turn={turn_percent:.0f}%")
         if e.get("is_missing"):
             event_lines.append(f"AR restoring {e.get('label')}")
 
@@ -537,9 +757,19 @@ def build_info_text(record: dict):
     return "\n".join(lines)
 
 
-def draw_type_legend_box(fig):
+def draw_type_legend_box(fig, record=None):
     """在图窗口左上角绘制固定图例框：图标和文字都包含在方框内。"""
-    ax_leg = fig.add_axes([0.045, 0.67, 0.15, 0.24])
+    if record is not None:
+        enemies = record.get("enemies", [])
+        friendlies = record.get("friendlies", [])
+        heterogeneous = has_heterogeneous_friendly_roles(record)
+        friendly_row_count = len(friendlies) if heterogeneous else 1
+        row_count = friendly_row_count + len(enemies)
+        box_h = min(0.47, max(0.25, 0.055 * (row_count + 1.6)))
+        ax_leg = fig.add_axes([0.012, 0.95 - box_h, 0.185, box_h])
+    else:
+        ax_leg = fig.add_axes([0.045, 0.67, 0.15, 0.24])
+
     ax_leg.set_xlim(0.0, 1.0)
     ax_leg.set_ylim(0.0, 1.0)
     ax_leg.axis("off")
@@ -555,6 +785,74 @@ def draw_type_legend_box(fig):
         zorder=0,
     )
     ax_leg.add_patch(bg)
+
+    if record is not None:
+        ax_leg.text(0.06, 0.95, "[Roles / targets]", fontsize=9.0, va="top", ha="left")
+
+        legend_items = []
+        if heterogeneous:
+            for f in friendlies:
+                role = get_friendly_role(f)
+                aircraft_type = str(f.get("aircraft_type") or f.get("AircraftType") or "fighter")
+                aircraft_type = aircraft_type.replace("_", " ")
+                label = f"{f.get('label', 'F')}: {role} | {aircraft_type}"
+                legend_items.append(("FriendlyFighter", label, role))
+        else:
+            legend_items.append(("FriendlyFighter", "Friendly: homogeneous", "Member"))
+
+        for e in enemies:
+            raw_tp = str(
+                e.get("display_type")
+                or e.get("true_type")
+                or e.get("sensor_type")
+                or e.get("Type")
+                or e.get("type")
+                or e.get("fused_type")
+                or "Unknown"
+            )
+            icon_tp = normalize_type(raw_tp)
+            type_name = "Helicopter" if icon_tp == "Heli" else icon_tp
+            intent = e.get("intent_gt")
+            if intent:
+                configured_intent = e.get("configured_intent")
+                if e.get("intent_switch") and configured_intent and configured_intent != intent:
+                    intent_text = f"{intent}->{configured_intent}"
+                else:
+                    intent_text = str(intent)
+                legend_items.append((icon_tp, f"{e.get('label', 'T')} {type_name} | {intent_text}", None))
+            else:
+                legend_items.append((icon_tp, f"{e.get('label', 'T')} {type_name}", None))
+
+        y_top = 0.84
+        dy = min(0.088, 0.76 / max(1, len(legend_items) - 1))
+        x_img0, x_img1 = 0.055, 0.155
+        x_text = 0.20
+
+        for idx, (tp, label, role) in enumerate(legend_items):
+            y = y_top - idx * dy
+            try:
+                img = load_icon_image(tp)
+                ax_leg.imshow(img, extent=(x_img0, x_img1, y - 0.032, y + 0.032), aspect='auto', zorder=1)
+            except Exception:
+                pass
+
+            if role and role != "Member":
+                role_style = FRIENDLY_ROLE_STYLES[role]
+                ax_leg.scatter(
+                    [(x_img0 + x_img1) / 2.0],
+                    [y],
+                    s=105,
+                    marker=role_style["marker"],
+                    facecolors="none",
+                    edgecolors=role_style["color"],
+                    linewidths=1.8,
+                    zorder=3,
+                )
+
+            ax_leg.text(x_text, y, label, fontsize=7.5, va='center', ha='left', zorder=2)
+
+        return ax_leg
+
     ax_leg.text(0.08, 0.93, "[Type icons]", fontsize=10, va="top", ha="left")
 
     legend_items = [
@@ -595,26 +893,56 @@ def draw_frame(
     show_velocity: bool = True,
     show_truth: bool = True,
     show_legend: bool = True,
+    show_title: bool = True,
 ):
     ax3d.clear()
-    ax_text.clear()
+    if ax_text is not None:
+        ax_text.clear()
 
     record = records[frame_idx]
     t = int(record.get("time", 0))
 
     # 我方轨迹尾迹
-    for i, _ in enumerate(record.get("friendlies", [])):
+    for i, friendly in enumerate(record.get("friendlies", [])):
+        role_style = get_friendly_role_style(friendly)
         xs, ys, zs = trajectory(records, "friendlies", i, frame_idx, tail_len)
         if len(xs) > 0:
-            ax3d.plot(xs, ys, zs, color=TYPE_COLORS["FriendlyFighter"], alpha=0.60, linewidth=2.2)
+            ax3d.plot(
+                xs,
+                ys,
+                zs,
+                color=role_style["color"],
+                alpha=0.72,
+                linewidth=role_style["linewidth"],
+                linestyle=role_style["linestyle"],
+            )
 
     # 敌方轨迹尾迹
-    for j, e in enumerate(record.get("enemies", [])):
+    enemy_trail_items = list(enumerate(record.get("enemies", [])))
+    enemy_trail_items.sort(
+        key=lambda item: 1 if get_enemy_display_type(item[1]) == "Missile" else 0
+    )
+    for j, e in enemy_trail_items:
         tp = get_enemy_display_type(e)
-        color = TYPE_COLORS.get(tp, TYPE_COLORS["Unknown"])
-        xs, ys, zs = trajectory(records, "enemies", j, frame_idx, tail_len)
+        full_history = uses_full_history_trail(e)
+        style = (
+            SCENE_B_FEINT_TRAIL_STYLE
+            if full_history
+            else TRAIL_STYLES.get(tp, DEFAULT_TRAIL_STYLE)
+        )
+        color = style.get("color", TRAIL_COLORS.get(tp, TYPE_COLORS["Unknown"]))
+        history_length = frame_idx + 1 if full_history else tail_len
+        xs, ys, zs = trajectory(records, "enemies", j, frame_idx, history_length)
         if len(xs) > 0:
-            ax3d.plot(xs, ys, zs, color=color, alpha=0.62, linewidth=1.9)
+            ax3d.plot(
+                xs,
+                ys,
+                zs,
+                color=color,
+                alpha=style["alpha"],
+                linewidth=style["linewidth"],
+                linestyle=style["linestyle"],
+            )
 
     # 当前我方编队图标
     friendlies = record.get("friendlies", [])
@@ -629,21 +957,91 @@ def draw_frame(
         fy.append(y)
         fz.append(z)
 
+        role = get_friendly_role(f)
+        role_style = FRIENDLY_ROLE_STYLES[role]
         vx, vy, _ = vxyz_of(f)
-        add_icon3d(ax3d, "FriendlyFighter", x, y, z, vx=vx, vy=vy, zoom_scale=1.0)
-        ax3d.text(x, y, z + TEXT_Z_OFFSET, f.get("label", "F"), fontsize=9)
+        add_icon3d(
+            ax3d,
+            "FriendlyFighter",
+            x,
+            y,
+            z,
+            vx=vx,
+            vy=vy,
+            zoom_scale=role_style["zoom"],
+        )
+
+        if role != "Member":
+            ax3d.scatter(
+                [x],
+                [y],
+                [z],
+                s=210,
+                marker=role_style["marker"],
+                facecolors="none",
+                edgecolors=role_style["color"],
+                linewidths=2.2,
+                depthshade=False,
+            )
+            capability_state = f.get("capability_state", "Healthy")
+            if capability_state in ("Degrading", "Degraded"):
+                ax3d.scatter(
+                    [x],
+                    [y],
+                    [z],
+                    s=285,
+                    marker="x",
+                    color="#b91c1c",
+                    linewidths=2.0,
+                    depthshade=False,
+                )
+                friendly_label = f"{f.get('label', 'F')} [{role_style['abbr']}|DEG]"
+            else:
+                friendly_label = f"{f.get('label', 'F')} [{role_style['abbr']}]"
+            ax3d.text(
+                x,
+                y,
+                z + FRIENDLY_LABEL_Z_OFFSET,
+                friendly_label,
+                fontsize=9,
+                color=role_style["color"],
+                fontweight="bold",
+                bbox={
+                    "boxstyle": "round,pad=0.15",
+                    "facecolor": "white",
+                    "edgecolor": role_style["color"],
+                    "linewidth": 0.8,
+                    "alpha": 0.78,
+                },
+            )
+        else:
+            ax3d.text(
+                x,
+                y,
+                z + FRIENDLY_LABEL_Z_OFFSET,
+                f.get("label", "F"),
+                fontsize=9,
+            )
 
     # 连接成编队轮廓
     if len(fx) >= 4:
-        order = [0, 1, 3, 2, 0]
-        ax3d.plot(
-            [fx[k] for k in order],
-            [fy[k] for k in order],
-            [fz[k] for k in order],
-            color=TYPE_COLORS["FriendlyFighter"],
-            alpha=0.92,
-            linewidth=2.4,
-        )
+        formation_type = str(record.get("formation_type", "Wedge"))
+        if "WideSearchLine" in formation_type or "LineAbreast" in formation_type:
+            link_segments = [(1, 0), (0, 2), (0, 3)]
+        elif "ProtectiveBox" in formation_type or "DefensiveSpread" in formation_type:
+            link_segments = [(1, 0), (2, 0), (0, 3), (1, 2)]
+        else:
+            link_segments = [(0, 1), (0, 2), (0, 3), (1, 3), (2, 3)]
+
+        for a, b in link_segments:
+            ax3d.plot(
+                [fx[a], fx[b]],
+                [fy[a], fy[b]],
+                [fz[a], fz[b]],
+                color=TYPE_COLORS["FriendlyFighter"],
+                alpha=0.92,
+                linewidth=2.4,
+            )
 
     # 当前敌方目标图标
     enemies = record.get("enemies", [])
@@ -658,10 +1056,6 @@ def draw_frame(
         # 威胁度越大，图标只轻微放大，避免相互遮挡
         zoom_scale = 0.92 + 0.20 * score
         vx, vy, _ = vxyz_of(e)
-        add_icon3d(ax3d, tp, x, y, z, vx=vx, vy=vy, zoom_scale=zoom_scale)
-
-        label = e.get("label", "T")
-        ax3d.text(x, y, z + TEXT_Z_OFFSET, label, fontsize=9)
 
         if show_velocity:
             vx, vy, vz = vxyz_of(e)
@@ -701,6 +1095,11 @@ def draw_frame(
                         alpha=VELOCITY_ARROW_ALPHA,
                     )
 
+        add_icon3d(ax3d, tp, x, y, z, vx=vx, vy=vy, zoom_scale=zoom_scale)
+
+        label = e.get("label", "T")
+        ax3d.text(x, y, z + ENEMY_LABEL_Z_OFFSET, label, fontsize=9)
+
     # 真实点位（用于缺失/插补参考）
     if show_truth:
         for e in enemies:
@@ -714,7 +1113,12 @@ def draw_frame(
     pts = all_positions_for_axes(records, frame_idx, tail_len)
     set_axes_equal(ax3d, pts)
 
-    ax3d.set_title(f"3D formation threat assessment scene  |  t = {t}s", fontsize=12)
+    if show_title:
+        formation_type = record.get("formation_type", "")
+        title_suffix = f"  |  formation = {formation_type}" if formation_type else ""
+        ax3d.set_title(f"3D formation threat assessment scene  |  t = {t}s{title_suffix}", fontsize=12)
+    else:
+        ax3d.set_title("")
     ax3d.set_xlabel("X / km")
     ax3d.set_ylabel("Y / km")
     ax3d.set_zlabel("Z / km")
@@ -722,15 +1126,16 @@ def draw_frame(
     ax3d.view_init(elev=22, azim=-58)
 
 
-    ax_text.axis("off")
-    ax_text.text(
-        0.0, 1.0,
-        build_info_text(record),
-        va="top",
-        ha="left",
-        fontsize=9,
-        family="monospace",
-    )
+    if ax_text is not None:
+        ax_text.axis("off")
+        ax_text.text(
+            0.0, 1.0,
+            build_info_text(record),
+            va="top",
+            ha="left",
+            fontsize=9,
+            family="monospace",
+        )
 
 
 
@@ -784,6 +1189,187 @@ def apply_axis_limits(ax3d, limits):
     ax3d.set_zlim(*limits["zlim"])
 
 
+def export_scene_png(records, output_path, frame_idx, dpi=300, fixed_limits=None):
+    """Export one scene-only frame without legends, rankings, or event text."""
+    output_path = FilePath(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig = plt.figure(figsize=(7.2, 6.1), dpi=dpi)
+    ax3d = fig.add_axes([0.03, 0.06, 0.92, 0.92], projection="3d")
+
+    draw_frame(
+        ax3d,
+        None,
+        records,
+        frame_idx,
+        tail_len=TAIL_LEN_DEFAULT,
+        show_velocity=True,
+        show_truth=False,
+        show_legend=False,
+        show_title=False,
+    )
+    if fixed_limits is None:
+        fixed_limits = compute_global_axis_limits(records)
+    apply_axis_limits(ax3d, fixed_limits)
+
+    fig.savefig(
+        output_path,
+        dpi=dpi,
+        bbox_inches="tight",
+        pad_inches=0.04,
+        facecolor="white",
+    )
+    plt.close(fig)
+    print(f"Scene PNG saved to: {output_path.resolve()}")
+
+
+def export_scene_gif(
+    records,
+    output_path,
+    frame_indices,
+    fps=6,
+    dpi=100,
+    fixed_limits=None,
+):
+    """Export a compact 3-D-scene-only GIF without legends or rank panels."""
+    output_path = FilePath(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig = plt.figure(figsize=(6.4, 6.0), dpi=dpi, facecolor="white")
+    ax3d = fig.add_axes([0.02, 0.04, 0.94, 0.93], projection="3d")
+    if fixed_limits is None:
+        fixed_limits = compute_global_axis_limits(records)
+
+    pil_frames = []
+    duration_ms = int(1000 / fps)
+    total = len(frame_indices)
+
+    for n, idx in enumerate(frame_indices, start=1):
+        t = int(records[idx].get("time", idx))
+        print(f"[Scene GIF] rendering frame {n}/{total}, t={t}s")
+        draw_frame(
+            ax3d,
+            None,
+            records,
+            idx,
+            tail_len=TAIL_LEN_DEFAULT,
+            show_velocity=True,
+            show_truth=False,
+            show_legend=False,
+            show_title=False,
+        )
+        apply_axis_limits(ax3d, fixed_limits)
+        fig.canvas.draw()
+        rgba = np.asarray(fig.canvas.buffer_rgba())
+        image = Image.fromarray(rgba).convert("RGB")
+        pil_frames.append(image.convert("P", palette=Image.ADAPTIVE))
+
+    if not pil_frames:
+        plt.close(fig)
+        raise RuntimeError("No frames are available for the scene-only GIF.")
+
+    pil_frames[0].save(
+        output_path,
+        save_all=True,
+        append_images=pil_frames[1:],
+        duration=duration_ms,
+        loop=0,
+        optimize=False,
+    )
+    plt.close(fig)
+    print(f"Scene-only GIF saved to: {output_path.resolve()}")
+
+
+def select_uniform_time_frames(records, start_time, end_time, max_frames):
+    """Select uniformly distributed record indices, including both endpoints."""
+    eligible = [
+        idx
+        for idx, record in enumerate(records)
+        if start_time <= int(record.get("time", 0)) <= end_time
+    ]
+    if not eligible:
+        raise ValueError(
+            f"No visualization records found between {start_time}s and {end_time}s."
+        )
+
+    sample_count = min(max_frames, len(eligible))
+    positions = np.linspace(0, len(eligible) - 1, sample_count, dtype=int)
+    return [eligible[pos] for pos in np.unique(positions)]
+
+
+def combine_stage_gifs(gif_paths, output_path, default_duration_ms=167):
+    """Append stage GIFs while removing duplicated boundary frames."""
+    output_path = FilePath(output_path)
+    combined_frames = []
+    frame_durations = []
+
+    for gif_index, gif_path in enumerate(gif_paths):
+        with Image.open(gif_path) as source:
+            for frame_index in range(source.n_frames):
+                if gif_index > 0 and frame_index == 0:
+                    continue
+                source.seek(frame_index)
+                duration = int(source.info.get("duration", default_duration_ms))
+                frame = source.convert("RGB").convert(
+                    "P", palette=Image.ADAPTIVE
+                )
+                combined_frames.append(frame.copy())
+                frame_durations.append(duration)
+
+    if not combined_frames:
+        raise RuntimeError("No frames are available for the combined formation GIF.")
+
+    combined_frames[0].save(
+        output_path,
+        save_all=True,
+        append_images=combined_frames[1:],
+        duration=frame_durations,
+        loop=0,
+        optimize=False,
+    )
+    print(f"Combined formation GIF saved to: {output_path.resolve()}")
+    return output_path
+
+
+def export_formation_stage_gifs(records, output_dir, fps=6, dpi=100, max_frames=21):
+    """Export the three presentation stages of scene 3 as scene-only GIFs."""
+    stages = (
+        (0, 140, "Formation_Stage1_CruiseWedge_000_140.gif"),
+        (140, 340, "Formation_Stage2_WideSearch_140_340.gif"),
+        (340, 600, "Formation_Stage3_ProtectiveFormation_340_600.gif"),
+    )
+    output_dir = FilePath(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    fixed_limits = compute_global_axis_limits(records)
+    outputs = []
+
+    for start_time, end_time, filename in stages:
+        frame_indices = select_uniform_time_frames(
+            records,
+            start_time=start_time,
+            end_time=end_time,
+            max_frames=max_frames,
+        )
+        output_path = output_dir / filename
+        export_scene_gif(
+            records,
+            output_path=output_path,
+            frame_indices=frame_indices,
+            fps=fps,
+            dpi=dpi,
+            fixed_limits=fixed_limits,
+        )
+        outputs.append(output_path)
+
+    combined_path = combine_stage_gifs(
+        outputs,
+        output_dir / "Formation_All_Stages_000_600.gif",
+        default_duration_ms=int(1000 / fps),
+    )
+    outputs.append(combined_path)
+    return outputs
+
+
 def render_frame_to_image(fig, ax3d, ax_text, records, frame_idx, fixed_limits):
     """
     绘制某一帧，并把当前 Matplotlib 画布转换为 PIL Image。
@@ -816,10 +1402,10 @@ def export_gif(records, output_path, frame_indices, fps=8, dpi=100):
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     fig = plt.figure(figsize=(15.8, 8.6), dpi=dpi)
-    ax3d = fig.add_axes([0.055, 0.14, 0.60, 0.80], projection="3d")
+    ax3d = fig.add_axes([0.20, 0.14, 0.47, 0.80], projection="3d")
     ax_text = fig.add_axes([0.71, 0.15, 0.26, 0.79])
 
-    draw_type_legend_box(fig)
+    draw_type_legend_box(fig, records[frame_indices[0]])
     fixed_limits = compute_global_axis_limits(records, frame_indices)
 
     pil_frames = []
@@ -860,10 +1446,10 @@ def export_mp4(records, output_path, frame_indices, fps=12, dpi=100):
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     fig = plt.figure(figsize=(15.8, 8.6), dpi=dpi)
-    ax3d = fig.add_axes([0.055, 0.14, 0.60, 0.80], projection="3d")
+    ax3d = fig.add_axes([0.20, 0.14, 0.47, 0.80], projection="3d")
     ax_text = fig.add_axes([0.71, 0.15, 0.26, 0.79])
 
-    draw_type_legend_box(fig)
+    draw_type_legend_box(fig, records[frame_indices[0]])
     fixed_limits = compute_global_axis_limits(records, frame_indices)
 
     writer = FFMpegWriter(
@@ -907,10 +1493,51 @@ def main():
         help="导出格式。gif 不需要 ffmpeg；mp4 需要 ffmpeg。默认 gif。",
     )
     parser.add_argument(
+        "--data",
+        type=str,
+        default=str(DATA_PATH),
+        help="visual_data.json 路径。默认 results_fig/visual_data.json。",
+    )
+    parser.add_argument(
+        "--scenario",
+        type=str,
+        default=None,
+        help="场景编号。设置后自动读取 results_fig/<scenario>/visual_data.json。",
+    )
+    parser.add_argument(
+        "--formation-stage-gifs",
+        action="store_true",
+        help="Scene 3 only: export three compact formation-stage GIFs without rank panels.",
+    )
+    parser.add_argument(
+        "--stage-max-frames",
+        type=int,
+        default=21,
+        help="Maximum frames in each formation-stage GIF. Default: 21.",
+    )
+    parser.add_argument(
         "--step",
         type=int,
         default=5,
         help="每隔多少秒/帧取一帧导出。默认 5。数值越小越流畅但越慢、文件越大。",
+    )
+    parser.add_argument(
+        "--start-time",
+        type=int,
+        default=None,
+        help="First simulation second to include in the exported animation.",
+    )
+    parser.add_argument(
+        "--end-time",
+        type=int,
+        default=None,
+        help="Last simulation second to include in the exported animation.",
+    )
+    parser.add_argument(
+        "--max-frames",
+        type=int,
+        default=None,
+        help="Uniformly sample at most this many frames from the requested time range.",
     )
     parser.add_argument(
         "--fps",
@@ -933,17 +1560,82 @@ def main():
 
     args = parser.parse_args()
 
-    _, records = load_data(DATA_PATH)
+    data_path = FilePath("results_fig") / args.scenario / "visual_data.json" if args.scenario else FilePath(args.data)
+    print(f"Loading visualization data from: {data_path.resolve()}")
+    meta, records = load_data(data_path)
+    display_types = freeze_enemy_display_types(records)
+    print("Frozen display types:", ", ".join(f"{k}={v}" for k, v in sorted(display_types.items())))
     if args.step <= 0:
         raise ValueError("--step 必须大于 0")
+    if args.stage_max_frames <= 0:
+        raise ValueError("--stage-max-frames must be greater than 0")
 
-    frame_indices = list(range(0, len(records), args.step))
-    if frame_indices[-1] != len(records) - 1:
-        frame_indices.append(len(records) - 1)
+    if args.formation_stage_gifs:
+        experiment_id = str(meta.get("experiment_id", args.scenario or ""))
+        formation_mode = str(meta.get("formation_mode", ""))
+        if (
+            experiment_id != "dynamic_formation"
+            and formation_mode != "dynamic_homogeneous"
+        ):
+            raise ValueError(
+                "--formation-stage-gifs requires scene 3 dynamic_formation data."
+            )
+        output_dir = data_path.parent / "formation_stage_gifs"
+        outputs = export_formation_stage_gifs(
+            records,
+            output_dir=output_dir,
+            fps=args.fps,
+            dpi=args.dpi,
+            max_frames=args.stage_max_frames,
+        )
+        print("\nThree scene-only formation GIFs have been generated:")
+        for output_path in outputs:
+            print(f"  -> {output_path.resolve()}")
+        return
+
+    if (
+        args.start_time is not None
+        and args.end_time is not None
+        and args.start_time > args.end_time
+    ):
+        raise ValueError("--start-time must not be greater than --end-time")
+    if args.max_frames is not None and args.max_frames <= 0:
+        raise ValueError("--max-frames must be greater than 0")
+
+    eligible_indices = [
+        idx
+        for idx, record in enumerate(records)
+        if (args.start_time is None or int(record.get("time", 0)) >= args.start_time)
+        and (args.end_time is None or int(record.get("time", 0)) <= args.end_time)
+    ]
+    if not eligible_indices:
+        raise ValueError("No visualization records fall inside the requested time range")
+
+    if args.max_frames is not None:
+        sample_count = min(args.max_frames, len(eligible_indices))
+        sample_positions = np.linspace(
+            0,
+            len(eligible_indices) - 1,
+            num=sample_count,
+            dtype=int,
+        )
+        frame_indices = [eligible_indices[pos] for pos in np.unique(sample_positions)]
+    else:
+        frame_indices = eligible_indices[::args.step]
+        if frame_indices[-1] != eligible_indices[-1]:
+            frame_indices.append(eligible_indices[-1])
 
     if args.output is None:
         suffix = "gif" if args.format == "gif" else "mp4"
-        args.output = str(FilePath("results_fig") / f"threat_assessment_animation.{suffix}")
+        if args.start_time is None and args.end_time is None:
+            range_suffix = ""
+        else:
+            first_time = int(records[eligible_indices[0]].get("time", 0))
+            last_time = int(records[eligible_indices[-1]].get("time", 0))
+            range_suffix = f"_{first_time:03d}_{last_time:03d}"
+        args.output = str(
+            data_path.parent / f"threat_assessment_animation{range_suffix}.{suffix}"
+        )
 
     if args.format == "gif":
         export_gif(records, args.output, frame_indices, fps=args.fps, dpi=args.dpi)

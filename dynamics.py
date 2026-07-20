@@ -149,10 +149,234 @@ class MQ9_Spherical(SphericalBaseTarget):
         self.kinematic_update(dt, 0.2 * 0.340, 10.6, C_cmd)
 
 # ================= 2.1 同构飞机编队态势建模与相对特征构造 =================
+FRIENDLY_AIRCRAFT_CONFIG = [
+    {
+        "Role": "Leader",
+        "AircraftType": "heavy_fighter",
+        "Value": 1.6,
+        "Vulnerability": 1.0,
+        "Maneuverability": 1.0,
+        "SensorRange": 260.0,
+        "WeaponRange": 150.0,
+        "ECMCapability": 0.7,
+    },
+    {
+        "Role": "LeftWing",
+        "AircraftType": "stealth_fighter",
+        "Value": 1.0,
+        "Vulnerability": 0.95,
+        "Maneuverability": 1.12,
+        "SensorRange": 220.0,
+        "WeaponRange": 135.0,
+        "ECMCapability": 0.5,
+    },
+    {
+        "Role": "RightWing",
+        "AircraftType": "stealth_fighter",
+        "Value": 1.0,
+        "Vulnerability": 0.95,
+        "Maneuverability": 1.12,
+        "SensorRange": 220.0,
+        "WeaponRange": 135.0,
+        "ECMCapability": 0.5,
+    },
+    {
+        "Role": "RearGuard",
+        "AircraftType": "escort",
+        "Value": 1.2,
+        "Vulnerability": 1.05,
+        "Maneuverability": 0.98,
+        "SensorRange": 210.0,
+        "WeaponRange": 145.0,
+        "ECMCapability": 0.6,
+    },
+]
+
+HOMOGENEOUS_FRIENDLY_AIRCRAFT_CONFIG = [
+    {
+        "Role": "Member",
+        "AircraftType": "fighter",
+        "Value": 1.0,
+        "Vulnerability": 1.0,
+        "Maneuverability": 1.0,
+        "SensorRange": 230.0,
+        "WeaponRange": 140.0,
+        "ECMCapability": 0.5,
+    },
+    {
+        "Role": "Member",
+        "AircraftType": "fighter",
+        "Value": 1.0,
+        "Vulnerability": 1.0,
+        "Maneuverability": 1.0,
+        "SensorRange": 230.0,
+        "WeaponRange": 140.0,
+        "ECMCapability": 0.5,
+    },
+    {
+        "Role": "Member",
+        "AircraftType": "fighter",
+        "Value": 1.0,
+        "Vulnerability": 1.0,
+        "Maneuverability": 1.0,
+        "SensorRange": 230.0,
+        "WeaponRange": 140.0,
+        "ECMCapability": 0.5,
+    },
+    {
+        "Role": "Member",
+        "AircraftType": "fighter",
+        "Value": 1.0,
+        "Vulnerability": 1.0,
+        "Maneuverability": 1.0,
+        "SensorRange": 230.0,
+        "WeaponRange": 140.0,
+        "ECMCapability": 0.5,
+    },
+]
+
+FORMATION_MODE_DESCRIPTIONS = {
+    "fixed_homogeneous": "Fixed homogeneous formation",
+    "dynamic_homogeneous": "Dynamic homogeneous formation",
+    "dynamic_heterogeneous": "Dynamic heterogeneous leader-wingman formation",
+    "dynamic_heterogeneous_degraded": (
+        "Dynamic heterogeneous formation with progressive F2 capability degradation"
+    ),
+}
+
+
+FRIENDLY_DEGRADATION_EVENT = {
+    "aircraft_index": 1,
+    "label": "F2",
+    "start_time": 280.0,
+    "end_time": 340.0,
+    "final_vulnerability": 1.35,
+    "final_maneuverability": 0.72,
+    "description": "F2 left-wing local damage",
+}
+
+
+def apply_friendly_degradation(friendlies, time_s, formation_mode):
+    """Apply the scene-6 capability event without changing aircraft motion."""
+    for friendly in friendlies:
+        friendly["BaselineVulnerability"] = float(friendly["Vulnerability"])
+        friendly["BaselineManeuverability"] = float(friendly["Maneuverability"])
+        friendly["CapabilityState"] = "Healthy"
+        friendly["DamageLevel"] = 0.0
+        friendly["CapabilityEvent"] = ""
+
+    if formation_mode != "dynamic_heterogeneous_degraded":
+        return
+
+    event = FRIENDLY_DEGRADATION_EVENT
+    friendly = friendlies[event["aircraft_index"]]
+    start_time = event["start_time"]
+    end_time = event["end_time"]
+
+    if time_s <= start_time:
+        progress = 0.0
+    elif time_s >= end_time:
+        progress = 1.0
+    else:
+        progress = (time_s - start_time) / (end_time - start_time)
+        progress = progress * progress * (3.0 - 2.0 * progress)
+
+    vulnerability_0 = friendly["BaselineVulnerability"]
+    maneuverability_0 = friendly["BaselineManeuverability"]
+    friendly["Vulnerability"] = float(
+        vulnerability_0
+        + progress * (event["final_vulnerability"] - vulnerability_0)
+    )
+    friendly["Maneuverability"] = float(
+        maneuverability_0
+        + progress * (event["final_maneuverability"] - maneuverability_0)
+    )
+    friendly["DamageLevel"] = float(progress)
+    friendly["CapabilityEvent"] = event["description"]
+
+    if progress >= 1.0:
+        friendly["CapabilityState"] = "Degraded"
+    elif progress > 0.0:
+        friendly["CapabilityState"] = "Degrading"
+
+
+FORMATION_OFFSETS = {
+    "CruiseWedge": [
+        np.array([0.0, 0.0, 0.0]),
+        np.array([-24.0, -30.0, 0.0]),
+        np.array([-24.0, 30.0, 0.0]),
+        np.array([-62.0, 0.0, 0.0]),
+    ],
+    "WideSearchLine": [
+        np.array([0.0, 0.0, 0.0]),
+        np.array([-8.0, -82.0, 0.0]),
+        np.array([-8.0, 82.0, 0.0]),
+        np.array([-58.0, 0.0, 0.0]),
+    ],
+    "ProtectiveBox": [
+        np.array([0.0, 0.0, 0.0]),
+        np.array([34.0, -48.0, 0.0]),
+        np.array([34.0, 48.0, 0.0]),
+        np.array([-70.0, 0.0, 0.0]),
+    ],
+}
+
+
+def formation_stage_at_time(time_s):
+    if time_s < 200.0:
+        return "CruiseWedge"
+    if time_s < 400.0:
+        return "WideSearchLine"
+    return "ProtectiveBox"
+
+
+def formation_offsets_at_time(time_s, transition_seconds=120.0):
+    stages = ["CruiseWedge", "WideSearchLine", "ProtectiveBox"]
+    transition_points = [200.0, 400.0]
+
+    for idx, switch_time in enumerate(transition_points):
+        half = transition_seconds / 2.0
+        if switch_time - half <= time_s <= switch_time + half:
+            prev_stage = stages[idx]
+            next_stage = stages[idx + 1]
+            ratio = (time_s - (switch_time - half)) / transition_seconds
+            ratio = float(np.clip(ratio, 0.0, 1.0))
+            ratio = ratio * ratio * (3.0 - 2.0 * ratio)
+            return [
+                (1.0 - ratio) * old + ratio * new
+                for old, new in zip(FORMATION_OFFSETS[prev_stage], FORMATION_OFFSETS[next_stage])
+            ], f"{prev_stage}->{next_stage}"
+
+    stage = formation_stage_at_time(time_s)
+    return FORMATION_OFFSETS[stage], stage
+
+
+def local_formation_offset_to_world(offset, velocity):
+    """
+    Convert local formation offset to world coordinates.
+
+    Local offset convention:
+    - offset[0]: forward/backward along the leader velocity direction.
+    - offset[1]: left/right lateral direction in the horizontal plane.
+    - offset[2]: vertical offset.
+    """
+    speed_xy = np.linalg.norm(velocity[:2])
+    if speed_xy <= 1e-8:
+        forward = np.array([1.0, 0.0, 0.0], dtype=float)
+    else:
+        forward = np.array([velocity[0], velocity[1], 0.0], dtype=float) / speed_xy
+
+    lateral = np.array([-forward[1], forward[0], 0.0], dtype=float)
+    vertical = np.array([0.0, 0.0, 1.0], dtype=float)
+
+    return offset[0] * forward + offset[1] * lateral + offset[2] * vertical
+
+
 def create_homogeneous_fighter_formation(
     center=np.array([0.0, 0.0, 8.0]),
     velocity=np.array([0.85 * 0.340, 0.0, 0.0]),
-    formation_type="diamond"
+    formation_type="dynamic",
+    time_s=0.0,
 ):
     """
     创建同类型飞机编队。
@@ -222,6 +446,121 @@ def generate_friendly_series(num_steps, dt=1.0):
             formation_type="diamond"
         )
         friendly_series.append(friendlies)
+
+    return friendly_series
+
+
+def create_homogeneous_fighter_formation(
+    center=np.array([0.0, 0.0, 8.0]),
+    velocity=np.array([0.85 * 0.340, 0.0, 0.0]),
+    formation_type="dynamic",
+    time_s=0.0,
+    heterogeneous=True,
+):
+    """Create a four-aircraft formation with selectable role/capability settings."""
+    if formation_type in ("dynamic", "Dynamic"):
+        offsets, active_formation_type = formation_offsets_at_time(time_s)
+    else:
+        normalized_type = {
+            "diamond": "CruiseWedge",
+            "wedge": "CruiseWedge",
+            "Wedge": "CruiseWedge",
+            "line": "WideSearchLine",
+            "line_abreast": "WideSearchLine",
+            "LineAbreast": "WideSearchLine",
+            "defensive_spread": "ProtectiveBox",
+            "DefensiveSpread": "ProtectiveBox",
+        }.get(str(formation_type), formation_type)
+        if normalized_type not in FORMATION_OFFSETS:
+            raise ValueError(f"Unknown formation type: {formation_type}")
+        offsets = FORMATION_OFFSETS[normalized_type]
+        active_formation_type = normalized_type
+
+    friendlies = []
+    aircraft_config = FRIENDLY_AIRCRAFT_CONFIG if heterogeneous else HOMOGENEOUS_FRIENDLY_AIRCRAFT_CONFIG
+    for i, offset in enumerate(offsets):
+        cfg = aircraft_config[i]
+        world_offset = local_formation_offset_to_world(offset, velocity)
+        friendlies.append({
+            "Aircraft_ID": i,
+            "Name": f"Friendly_Fighter_{i + 1}",
+            "Role": cfg["Role"],
+            "AircraftType": cfg["AircraftType"],
+            "Value": cfg["Value"],
+            "Vulnerability": cfg["Vulnerability"],
+            "Maneuverability": cfg["Maneuverability"],
+            "SensorRange": cfg["SensorRange"],
+            "WeaponRange": cfg["WeaponRange"],
+            "ECMCapability": cfg["ECMCapability"],
+            "FormationType": active_formation_type,
+            "OffsetForward": float(offset[0]),
+            "OffsetLateral": float(offset[1]),
+            "OffsetVertical": float(offset[2]),
+            "OffsetX": float(world_offset[0]),
+            "OffsetY": float(world_offset[1]),
+            "OffsetZ": float(world_offset[2]),
+            "Type": "FriendlyFighter",
+            "X": float(center[0] + world_offset[0]),
+            "Y": float(center[1] + world_offset[1]),
+            "Z": float(center[2] + world_offset[2]),
+            "VX": float(velocity[0]),
+            "VY": float(velocity[1]),
+            "VZ": float(velocity[2]),
+        })
+
+    return friendlies
+
+
+def generate_friendly_series(num_steps, dt=1.0, formation_mode="dynamic_heterogeneous"):
+    """Generate a friendly formation time series for a selected experiment mode."""
+    if formation_mode not in FORMATION_MODE_DESCRIPTIONS:
+        valid = ", ".join(sorted(FORMATION_MODE_DESCRIPTIONS))
+        raise ValueError(f"Unknown formation_mode '{formation_mode}'. Valid modes: {valid}")
+
+    friendly_series = []
+    center0 = np.array([0.0, 0.0, 8.0], dtype=float)
+    velocity = np.array([0.85 * 0.340, 0.0, 0.0], dtype=float)
+    heterogeneous = formation_mode in (
+        "dynamic_heterogeneous",
+        "dynamic_heterogeneous_degraded",
+    )
+
+    for t in range(num_steps):
+        time_s = t * dt
+        current_center = center0 + velocity * time_s
+        formation_type = "dynamic" if formation_mode != "fixed_homogeneous" else "CruiseWedge"
+        friendlies = create_homogeneous_fighter_formation(
+            center=current_center,
+            velocity=velocity,
+            formation_type=formation_type,
+            time_s=time_s,
+            heterogeneous=heterogeneous,
+        )
+        apply_friendly_degradation(friendlies, time_s, formation_mode)
+        for f in friendlies:
+            f["FormationMode"] = formation_mode
+            f["FormationModeDescription"] = FORMATION_MODE_DESCRIPTIONS[formation_mode]
+        friendly_series.append(friendlies)
+
+    if num_steps >= 2 and dt > 0:
+        for t in range(num_steps):
+            for i in range(len(friendly_series[t])):
+                if t == 0:
+                    prev_state = friendly_series[t][i]
+                    next_state = friendly_series[t + 1][i]
+                    delta_t = dt
+                elif t == num_steps - 1:
+                    prev_state = friendly_series[t - 1][i]
+                    next_state = friendly_series[t][i]
+                    delta_t = dt
+                else:
+                    prev_state = friendly_series[t - 1][i]
+                    next_state = friendly_series[t + 1][i]
+                    delta_t = 2.0 * dt
+
+                friendly_series[t][i]["VX"] = float((next_state["X"] - prev_state["X"]) / delta_t)
+                friendly_series[t][i]["VY"] = float((next_state["Y"] - prev_state["Y"]) / delta_t)
+                friendly_series[t][i]["VZ"] = float((next_state["Z"] - prev_state["Z"]) / delta_t)
 
     return friendly_series
 
@@ -436,6 +775,100 @@ def compute_formation_state(friendlies):
     }
 
 
+def compute_formation_risk_factor(enemy_state, friendlies):
+    """
+    Compute a formation-structure risk factor without duplicating distance/TTC.
+
+    The factor measures whether the current formation geometry exposes the
+    leader and whether wingmen shield the leader from the enemy-target line.
+    It changes when the formation offsets change, but it does not use the
+    formation name as a direct score.
+    """
+    e_pos, e_vel = vec_from_state(enemy_state)
+    positions = []
+    velocities = []
+    leader_idx = 0
+
+    for idx, f in enumerate(friendlies):
+        f_pos, _ = vec_from_state(f)
+        _, f_vel = vec_from_state(f)
+        positions.append(f_pos)
+        velocities.append(f_vel)
+        if f.get("Role") == "Leader":
+            leader_idx = idx
+
+    positions = np.stack(positions)
+    velocities = np.stack(velocities)
+    leader_pos = positions[leader_idx]
+    leader_vel = velocities[leader_idx]
+    distances = np.linalg.norm(positions - e_pos, axis=1)
+    d_min = float(np.min(distances))
+    d_leader = float(distances[leader_idx])
+
+    exposure_scale = 80.0
+    relative_leader_exposure = 1.0 / (1.0 + max(d_leader - d_min, 0.0) / exposure_scale)
+
+    enemy_to_leader = leader_pos - e_pos
+    line_len_sq = float(np.dot(enemy_to_leader, enemy_to_leader))
+    shielding = 0.0
+
+    if line_len_sq > 1e-8:
+        shield_width = 35.0
+        for idx, f_pos in enumerate(positions):
+            if idx == leader_idx:
+                continue
+
+            alpha = float(np.dot(f_pos - e_pos, enemy_to_leader) / line_len_sq)
+            if alpha <= 0.05 or alpha >= 0.98:
+                continue
+
+            closest_on_line = e_pos + alpha * enemy_to_leader
+            lateral_distance = float(np.linalg.norm(f_pos - closest_on_line))
+            if lateral_distance > shield_width:
+                continue
+
+            role_weight = 1.0
+            role = friendlies[idx].get("Role", "")
+            if role == "RearGuard":
+                role_weight = 0.85
+
+            candidate = role_weight * (1.0 - lateral_distance / shield_width)
+            shielding = max(shielding, candidate)
+
+    shielding = float(np.clip(shielding, 0.0, 1.0))
+    shielding_loss = 1.0 - shielding
+
+    vc_leader = max(closing_speed(e_pos, e_vel, leader_pos, leader_vel), 0.0)
+    heading_leader = heading_angle_relative(e_pos, e_vel, leader_pos, leader_vel)
+    closing_factor = float(np.clip(vc_leader / 0.340, 0.0, 1.0))
+    heading_factor = 1.0 / (1.0 + heading_leader / 45.0)
+    approach_relevance = float(np.clip(0.55 * heading_factor + 0.45 * closing_factor, 0.0, 1.0))
+
+    structure_risk = float(np.clip(
+        0.55 * relative_leader_exposure + 0.45 * shielding_loss,
+        0.0,
+        1.0,
+    ))
+    formation_risk_factor = float(np.clip(
+        structure_risk * approach_relevance,
+        0.0,
+        1.0,
+    ))
+
+    return {
+        "D_leader": d_leader,
+        "RelativeLeaderExposure": float(relative_leader_exposure),
+        "Shielding": shielding,
+        "ShieldingLoss": float(shielding_loss),
+        "LeaderClosingSpeed": float(vc_leader),
+        "LeaderHeading": float(heading_leader),
+        "ApproachRelevance": approach_relevance,
+        "StructureRisk": structure_risk,
+        "FormationRiskFactor": formation_risk_factor,
+        "FormationType": friendlies[0].get("FormationType", "Unknown") if friendlies else "Unknown",
+    }
+
+
 def build_formation_target(enemy_state, friendlies):
     """
     构造敌方目标 E_j 对整个同构飞机编队的动态相对威胁特征。
@@ -516,8 +949,15 @@ def build_formation_target(enemy_state, friendlies):
     # 9. 编队级 Speed 输入
     #    这里可以用相对编队中心接近速度，也可以用最大单机接近速度。
     #    为了更体现编队成员被快速接近的风险，建议用二者较大值。
-    formation_closing_speed = max(vc_form, vc_max, 0.0)
-    formation_speed = formation_closing_speed / 0.340
+    # Keep the signed trend for intent inference.  It becomes negative only
+    # after the target is receding from both the formation center and every
+    # member, which is the key observation for attack-to-feint recognition.
+    signed_formation_closing_speed = max(vc_form, vc_max)
+
+    # Threat-speed evidence remains nonnegative: receding speed must not be
+    # interpreted as additional approach severity by the threat-level branch.
+    formation_speed = max(signed_formation_closing_speed, 0.0) / 0.340
+    formation_risk = compute_formation_risk_factor(enemy_state, friendlies)
 
     return {
     "Time": enemy_state.get("Time", None),
@@ -535,7 +975,7 @@ def build_formation_target(enemy_state, friendlies):
     "Shortcut": s_min,
 
     # 新增：给 DBN 意图节点使用的统一字段
-    "ClosingSpeed": formation_closing_speed,
+    "ClosingSpeed": signed_formation_closing_speed,
     "TTC": ttc_min,
 
     # 调试与论文解释用的编队指标
@@ -548,6 +988,16 @@ def build_formation_target(enemy_state, friendlies):
     "VC_max": vc_max,
     "CoverRatio": cover_ratio,
     "FormationRadius": R_f,
+    "D_leader": formation_risk["D_leader"],
+    "RelativeLeaderExposure": formation_risk["RelativeLeaderExposure"],
+    "Shielding": formation_risk["Shielding"],
+    "ShieldingLoss": formation_risk["ShieldingLoss"],
+    "LeaderClosingSpeed": formation_risk["LeaderClosingSpeed"],
+    "LeaderHeading": formation_risk["LeaderHeading"],
+    "ApproachRelevance": formation_risk["ApproachRelevance"],
+    "StructureRisk": formation_risk["StructureRisk"],
+    "FormationRiskFactor": formation_risk["FormationRiskFactor"],
+    "FormationType": formation_risk["FormationType"],
  }
 
 

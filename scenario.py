@@ -1,4 +1,11 @@
 import numpy as np
+from scenario_catalog import (
+    DEFAULT_SCENARIO_ID,
+    SMALL_SCENES,
+    get_big_scenario,
+    list_big_scenarios,
+)
+from dynamics import formation_offsets_at_time, local_formation_offset_to_world
 
 # ================= 5.5 面向编队的对抗进攻场景模型 =================
 FRIENDLY_CENTER0_ATTACK = np.array([0.0, 0.0, 8.0], dtype=float)
@@ -13,7 +20,15 @@ FORMATION_ATTACK_OFFSETS = {
 }
 
 
-def friendly_attack_point(time_s, role="Center"):
+FORMATION_ROLE_INDEX = {
+    "Leader": 0,
+    "LeftWing": 1,
+    "RightWing": 2,
+    "RearGuard": 3,
+}
+
+
+def friendly_attack_point(time_s, role="Center", dynamic_roles=False):
     """
     给定时间和攻击对象，返回敌方目标的瞄准点。
 
@@ -21,10 +36,26 @@ def friendly_attack_point(time_s, role="Center"):
     formation center = [0,0,8] + [0.85 Mach,0,0] * t
     再叠加编队成员相对位置。
     """
-    return (
-        FRIENDLY_CENTER0_ATTACK
-        + FRIENDLY_VEL_ATTACK * float(time_s)
-        + FORMATION_ATTACK_OFFSETS.get(role, FORMATION_ATTACK_OFFSETS["Center"])
+    center = FRIENDLY_CENTER0_ATTACK + FRIENDLY_VEL_ATTACK * float(time_s)
+    if not dynamic_roles:
+        return center + FORMATION_ATTACK_OFFSETS.get(
+            role,
+            FORMATION_ATTACK_OFFSETS["Center"],
+        )
+
+    offsets, _ = formation_offsets_at_time(float(time_s))
+    if role == "Center":
+        local_offset = np.mean(np.asarray(offsets, dtype=float), axis=0)
+    else:
+        role_index = FORMATION_ROLE_INDEX.get(role)
+        if role_index is None:
+            local_offset = np.mean(np.asarray(offsets, dtype=float), axis=0)
+        else:
+            local_offset = np.asarray(offsets[role_index], dtype=float)
+
+    return center + local_formation_offset_to_world(
+        local_offset,
+        FRIENDLY_VEL_ATTACK,
     )
 
 class IntentTarget:
@@ -54,11 +85,18 @@ class IntentTarget:
         feint_switch_distance=180.0,
         protected_role="Center",
         terminal_time=None,
+        intent_switch=None,
+        feint_transition_duration=None,
+        feint_escape_angle=80.0,
+        feint_turn_direction=1.0,
+        dynamic_role_targeting=False,
     ):
         self.tid = tid
         self.name = name
         self.type = t_type
         self.intent = intent
+        self.configured_intent = intent
+        self.intent_switch = intent_switch or {}
         self.jamming = jamming
 
         self.pos = np.asarray(init_pos, dtype=float)
@@ -66,17 +104,135 @@ class IntentTarget:
         self.speed = self.speed_mach * 0.340
 
         self.attack_role = attack_role
+        self.dynamic_role_targeting = bool(dynamic_role_targeting)
         self.lead_time = float(lead_time)
         self.lateral_amp = float(lateral_amp)
         self.lateral_freq = float(lateral_freq)
         self.attack_altitude = None if attack_altitude is None else float(attack_altitude)
 
         self.feint_switch_distance = float(feint_switch_distance)
+        self.feint_transition_duration = (
+            None
+            if feint_transition_duration is None
+            else float(feint_transition_duration)
+        )
+        self.feint_escape_angle = float(feint_escape_angle)
+        self.feint_turn_direction = float(feint_turn_direction)
         self.protected_role = protected_role
         self.terminal_time = terminal_time
+        self.intent_switch_activated = False
+        self.intent_switch_time = None
+        self.feint_entry_direction = None
 
         self.time = 0.0
         self.v_cart = self._compute_velocity(self.time)
+
+    def current_intent(self, time_s=None):
+        """
+        Return the current ground-truth intent.
+
+        Intent switching is scenario-driven.  A typical feint target can be
+        modeled as Attack during the approach phase and Feint once it reaches
+        the planned deception/turn-away window.
+        """
+        switch = self.intent_switch
+        if not switch:
+            return self.configured_intent
+
+        trigger = switch.get("trigger", "")
+        from_intent = switch.get("from_intent", self.configured_intent)
+        to_intent = switch.get("to_intent", self.configured_intent)
+        current_time = self.time if time_s is None else float(time_s)
+
+        if trigger == "time":
+            switch_time = float(switch.get("time", 0.0))
+            triggered = current_time >= switch_time
+            if triggered and switch.get("lock_after_switch", False):
+                self.intent_switch_activated = True
+                if self.intent_switch_time is None:
+                    self.intent_switch_time = current_time
+                if self.feint_entry_direction is None:
+                    aim_point = friendly_attack_point(
+                        current_time + self.lead_time,
+                        self.attack_role,
+                        self.dynamic_role_targeting,
+                    )
+                    if self.attack_altitude is not None:
+                        aim_point = aim_point.copy()
+                        aim_point[2] = self.attack_altitude
+                    self.feint_entry_direction = self._normalize(aim_point - self.pos)
+            return to_intent if triggered else from_intent
+
+        if trigger == "distance_to_attack_point":
+            if switch.get("lock_after_switch", False) and self.intent_switch_activated:
+                return to_intent
+
+            aim_point = friendly_attack_point(
+                current_time + self.lead_time,
+                self.attack_role,
+                self.dynamic_role_targeting,
+            )
+            if self.attack_altitude is not None:
+                aim_point = aim_point.copy()
+                aim_point[2] = self.attack_altitude
+
+            dist_to_aim = float(np.linalg.norm(aim_point - self.pos))
+            threshold = float(switch.get("threshold", self.feint_switch_distance))
+            triggered = dist_to_aim <= threshold
+            if triggered and switch.get("lock_after_switch", False):
+                self.intent_switch_activated = True
+                if self.intent_switch_time is None:
+                    self.intent_switch_time = current_time
+                if self.feint_entry_direction is None:
+                    self.feint_entry_direction = self._normalize(aim_point - self.pos)
+            return to_intent if triggered else from_intent
+
+        return self.configured_intent
+
+    def feint_turn_progress(self, time_s=None):
+        """Return a smooth 0-1 turn progress for intent-switch visualization."""
+        current_time = self.time if time_s is None else float(time_s)
+
+        if self.feint_transition_duration is not None and self.intent_switch_time is not None:
+            raw = (current_time - self.intent_switch_time) / max(
+                self.feint_transition_duration,
+                1e-6,
+            )
+            raw = float(np.clip(raw, 0.0, 1.0))
+            return raw * raw * (3.0 - 2.0 * raw)
+
+        aim_point = friendly_attack_point(
+            current_time + self.lead_time,
+            self.attack_role,
+            self.dynamic_role_targeting,
+        )
+        if self.attack_altitude is not None:
+            aim_point = aim_point.copy()
+            aim_point[2] = self.attack_altitude
+
+        dist_to_aim = float(np.linalg.norm(aim_point - self.pos))
+        transition_width = 70.0
+        return float(np.clip(
+            (self.feint_switch_distance + transition_width - dist_to_aim)
+            / transition_width,
+            0.0,
+            1.0,
+        ))
+
+    def intent_phase(self, time_s=None):
+        """Describe the configured attack-to-feint phase at the requested time."""
+        current_intent = self.current_intent(time_s)
+        if not self.intent_switch:
+            return current_intent, 0.0
+
+        from_intent = self.intent_switch.get("from_intent", self.configured_intent)
+        if current_intent == from_intent:
+            return "AttackApproach", 0.0
+
+        progress = self.feint_turn_progress(time_s)
+        if progress < 1.0 - 1e-9:
+            return "TurnTransition", progress
+        return "FeintDeparture", 1.0
 
     def _normalize(self, v):
         n = np.linalg.norm(v)
@@ -117,7 +273,8 @@ class IntentTarget:
 
             aim_point = friendly_attack_point(
                 aim_time,
-                self.attack_role
+                self.attack_role,
+                self.dynamic_role_targeting,
             )
 
             if self.attack_altitude is not None:
@@ -134,7 +291,8 @@ class IntentTarget:
         # ==========================================================
         aim_point = friendly_attack_point(
             time_s + self.lead_time,
-            self.attack_role
+            self.attack_role,
+            self.dynamic_role_targeting,
         )
 
         if self.attack_altitude is not None:
@@ -173,7 +331,11 @@ class IntentTarget:
         # 干扰平台保持在我方编队侧前方/侧方的远距站位
         # 这个站位随我方编队缓慢前移
         desired_offset = np.array([260.0, 180.0, 0.5], dtype=float)
-        desired_pos = friendly_attack_point(time_s, "Center") + desired_offset
+        desired_pos = friendly_attack_point(
+            time_s,
+            "Center",
+            self.dynamic_role_targeting,
+        ) + desired_offset
 
         to_station = desired_pos - self.pos
 
@@ -255,7 +417,8 @@ class IntentTarget:
 
         aim_point = friendly_attack_point(
             time_s + self.lead_time,
-            self.attack_role
+            self.attack_role,
+            self.dynamic_role_targeting,
         )
 
         if self.attack_altitude is not None:
@@ -267,6 +430,21 @@ class IntentTarget:
         attack_dir = self._normalize(to_aim)
 
         # 侧向脱离方向，不是掉头逃跑
+        if self.feint_transition_duration is not None:
+            progress = self.feint_turn_progress(time_s)
+            turn_angle = (
+                self.feint_turn_direction
+                * self.feint_escape_angle
+                * progress
+            )
+            turn_base = (
+                self.feint_entry_direction
+                if self.feint_entry_direction is not None
+                else attack_dir
+            )
+            main_dir = self._rotate_horizontal(turn_base, turn_angle)
+            return self.speed * main_dir
+
         escape_dir = self._rotate_horizontal(attack_dir, 80.0)
 
         # 平滑过渡，不要突然折线
@@ -293,9 +471,10 @@ class IntentTarget:
 
         # 侧翼掩护区域：位于我方编队未来航线的低空侧后方
         screen_point = friendly_attack_point(
-            time_s + 80.0,
-            "RearGuard"
-        ) + np.array([80.0, -120.0, -6.8], dtype=float)
+            time_s + 120.0,
+            self.protected_role,
+            self.dynamic_role_targeting,
+        ) + np.array([140.0, 180.0, 0.0], dtype=float)
 
         if self.attack_altitude is not None:
             screen_point[2] = self.attack_altitude
@@ -318,21 +497,29 @@ class IntentTarget:
         return self.speed * main_dir
 
     def _compute_velocity(self, time_s):
-        if self.intent == "Attack":
+        current_intent = self.current_intent(time_s)
+
+        if current_intent == "Attack":
             return self._attack_velocity(time_s)
-        elif self.intent == "Interference":
+        elif current_intent == "Interference":
             return self._interference_velocity(time_s)
-        elif self.intent == "Reconnaissance":
+        elif current_intent == "Reconnaissance":
             return self._recon_velocity(time_s)
-        elif self.intent == "Feint":
+        elif current_intent == "Feint":
             return self._feint_velocity(time_s)
-        elif self.intent == "EscortEvasion":
+        elif current_intent == "EscortEvasion":
             return self._escort_evasion_velocity(time_s)
         else:
             return self._attack_velocity(time_s)
 
     def get_state(self, current_time):
-        center = friendly_attack_point(current_time, "Center")
+        current_intent = self.current_intent(current_time)
+        intent_phase, turn_progress = self.intent_phase(current_time)
+        center = friendly_attack_point(
+            current_time,
+            "Center",
+            self.dynamic_role_targeting,
+        )
         rel_pos = self.pos - center
         rel_vel = self.v_cart - FRIENDLY_VEL_ATTACK
 
@@ -355,7 +542,12 @@ class IntentTarget:
             "Target_ID": self.tid,
             "Name": self.name,
             "Type": self.type,
-            "IntentGT": self.intent,
+            "IntentGT": current_intent,
+            "ConfiguredIntent": self.configured_intent,
+            "IntentSwitch": bool(self.intent_switch),
+            "IntentPhase": intent_phase,
+            "TurnProgress": float(turn_progress),
+            "IntentSwitchTime": self.intent_switch_time,
             "Jamming": self.jamming,
 
             "Height": round(max(0.001, float(self.pos[2])), 3),
@@ -373,6 +565,13 @@ class IntentTarget:
             "VZ": float(self.v_cart[2]),
 
             "AttackRole": self.attack_role,
+            "SmallSceneID": getattr(self, "small_scene_id", None),
+            "SmallSceneLabel": getattr(self, "small_scene_label", None),
+            "ThreatLevelGT": getattr(self, "threat_level", None),
+            "RecommendedDecision": getattr(self, "recommended_decision", None),
+            "DecisionReason": getattr(self, "decision_reason", None),
+            "CoreFeatures": getattr(self, "core_features", None),
+            "BigScenarioID": getattr(self, "big_scenario_id", None),
         }
 
     def update(self, dt=1.0):
@@ -507,133 +706,114 @@ class DirectedAttackTarget:
         self.time += dt
 
 
-def create_attack_targets():
-    return [
-        # T1：BGM-109C 巡航导弹，低空直接攻击
-        IntentTarget(
-            0,
-            "T1(BGM-109C-like)",
-            "Missile",
-            "Attack",
-            "Mid",
-            init_pos=np.array([620.0, -190.0, 6.80]),
-            speed_mach=0.95,
-            attack_role="Leader",
-            lead_time=40.0,
-            lateral_amp=0.0,
-            attack_altitude=None,
-            terminal_time=760.0,
-        ),
-
-        # T2：AGM-86B 巡航导弹，仍然是攻击，不再佯攻
-        IntentTarget(
-            1,
-            "T2(AGM-86B-like)",
-            "Missile",
-            "Attack",
-            "Mid",
-            init_pos=np.array([660.0, 210.0, 7.00]),
-            speed_mach=0.90,
-            attack_role="RightWing",
-            lead_time=40.0,
-            lateral_amp=0.0,
-            attack_altitude=None,
-            terminal_time=780.0,
-        ),
-
-        # T3：AH-64A，低空侧翼护航/规避
-        IntentTarget(
-            2,
-            "T3(AH-64A)",
-            "Heli",
-            "EscortEvasion",
-            "Mid",
-            init_pos=np.array([160.0, -220.0, 1.20]),
-            speed_mach=0.35,
-            protected_role="RearGuard",
-            attack_altitude=1.20,
-        ),
-
-        # T4：F-16C，执行佯攻
-        IntentTarget(
-            3,
-            "T4(F-16C)",
-            "Fighter",
-            "Feint",
-            "Mid",
-            init_pos=np.array([390.0, 135.0, 8.80]),
-            speed_mach=1.35,
-            attack_role="RightWing",
-            lead_time=95.0,
-            lateral_amp=0.03,
-            attack_altitude=8.80,
-            feint_switch_distance=210.0,
-        ),
-
-        # T5：F-22，高速隐身突防攻击
-        IntentTarget(
-            4,
-            "T5(F-22)",
-            "Fighter",
-            "Attack",
-            "Strong",
-            init_pos=np.array([355.0, -185.0, 9.20]),
-            speed_mach=1.85,
-            attack_role="LeftWing",
-            lead_time=95.0,
-            lateral_amp=0.03,
-            attack_altitude=9.20,
-        ),
-
-        # T6：B-52H，远距电子干扰平台
-        IntentTarget(
-            5,
-            "T6(B-52H)",
-            "Bomber",
-            "Interference",
-            "Strong",
-            init_pos=np.array([260.0, 220.0, 8.50]),
-            speed_mach=0.78,
-            attack_altitude=8.50,
-        ),
-
-        # T7：MQ-9，高空侦察监视
-        IntentTarget(
-            6,
-            "T7(MQ-9)",
-            "UAV",
-            "Reconnaissance",
-            "Weak",
-            init_pos=np.array([120.0, 360.0, 12.50]),
-            speed_mach=0.32,
-            attack_altitude=12.50,
-        ),
-    ]
+def get_available_scenarios():
+    return list_big_scenarios()
 
 
-def get_missing_configs():
-    return [
-        # T2 三维位置和速度缺失
-        {'target_idx': 1, 'feature': 'X',  'start': 80, 'end': 140},
-        {'target_idx': 1, 'feature': 'Y',  'start': 80, 'end': 140},
-        {'target_idx': 1, 'feature': 'Z',  'start': 80, 'end': 140},
-        {'target_idx': 1, 'feature': 'VX', 'start': 80, 'end': 140},
-        {'target_idx': 1, 'feature': 'VY', 'start': 80, 'end': 140},
-        {'target_idx': 1, 'feature': 'VZ', 'start': 80, 'end': 140},
-
-        # T5 三维位置和速度缺失
-        {'target_idx': 4, 'feature': 'X',  'start': 80, 'end': 140},
-        {'target_idx': 4, 'feature': 'Y',  'start': 80, 'end': 140},
-        {'target_idx': 4, 'feature': 'Z',  'start': 80, 'end': 140},
-        {'target_idx': 4, 'feature': 'VX', 'start': 80, 'end': 140},
-        {'target_idx': 4, 'feature': 'VY', 'start': 80, 'end': 140},
-        {'target_idx': 4, 'feature': 'VZ', 'start': 80, 'end': 140},
-    ]
+def get_scenario_info(scenario_id=DEFAULT_SCENARIO_ID):
+    return get_big_scenario(scenario_id)
 
 
-def get_misidentification_configs():
-    return [
-        {'target_idx': 0, 'feature': "Type", 'misidentification': "UAV", 'start': 200, 'end': 300},
-        {'target_idx': 1, 'feature': "Type", 'misidentification': "UAV", 'start': 200, 'end': 260},
-        {'target_idx': 4, 'feature': "Type", 'misidentification': "Bomber", 'start': 240, 'end': 300},    
-    ]
+def _make_target(tid, small_scene_id, spec, scenario_id):
+    kwargs = {
+        "attack_role": spec.get("attack_role", "Center"),
+        "lead_time": spec.get("lead_time", 80.0),
+        "lateral_amp": spec.get("lateral_amp", 0.0),
+        "lateral_freq": spec.get("lateral_freq", 0.025),
+        "attack_altitude": spec.get("attack_altitude", None),
+        "feint_switch_distance": spec.get("feint_switch_distance", 180.0),
+        "protected_role": spec.get("protected_role", "Center"),
+        "terminal_time": spec.get("terminal_time", None),
+        "intent_switch": spec.get("intent_switch", None),
+        "feint_transition_duration": spec.get("feint_transition_duration", None),
+        "feint_escape_angle": spec.get("feint_escape_angle", 80.0),
+        "feint_turn_direction": spec.get("feint_turn_direction", 1.0),
+        "dynamic_role_targeting": spec.get("dynamic_role_targeting", False),
+    }
+
+    target = IntentTarget(
+        tid,
+        f"T{tid + 1}({spec['name']})",
+        spec["target_type"],
+        spec["intent"],
+        spec["jamming"],
+        init_pos=np.array(spec["init_pos"], dtype=float),
+        speed_mach=spec["speed_mach"],
+        **kwargs,
+    )
+
+    target.small_scene_id = small_scene_id
+    target.small_scene_label = spec.get("label")
+    target.threat_level = spec.get("threat_level")
+    target.recommended_decision = spec.get("recommended_decision")
+    target.decision_reason = spec.get("decision_reason")
+    target.core_features = spec.get("core_features")
+    target.big_scenario_id = scenario_id
+    return target
+
+
+def create_attack_targets(scenario_id=DEFAULT_SCENARIO_ID):
+    scenario = get_big_scenario(scenario_id)
+    targets = []
+    for tid, small_scene_id in enumerate(scenario["small_scenes"]):
+        targets.append(_make_target(tid, small_scene_id, SMALL_SCENES[small_scene_id], scenario_id))
+    return targets
+
+
+def _target_index_map(scenario_id):
+    scenario = get_big_scenario(scenario_id)
+    return {small_scene_id: idx for idx, small_scene_id in enumerate(scenario["small_scenes"])}
+
+
+def get_missing_configs(scenario_id=DEFAULT_SCENARIO_ID):
+    scenario = get_big_scenario(scenario_id)
+    index_by_scene = _target_index_map(scenario_id)
+    configs = []
+
+    for event in scenario.get("missing_events", []):
+        target_key = event["target"]
+        if target_key not in index_by_scene:
+            raise ValueError(f"Missing event refers to target '{target_key}' not used by scenario '{scenario_id}'.")
+
+        for feature in event.get("features", []):
+            configs.append({
+                "target_idx": index_by_scene[target_key],
+                "target_scene": target_key,
+                "feature": feature,
+                "start": int(event["start"]),
+                "end": int(event["end"]),
+            })
+
+    return configs
+
+
+def get_misidentification_configs(scenario_id=DEFAULT_SCENARIO_ID):
+    scenario = get_big_scenario(scenario_id)
+    index_by_scene = _target_index_map(scenario_id)
+    configs = []
+
+    for event in scenario.get("misidentification_events", []):
+        target_key = event["target"]
+        if target_key not in index_by_scene:
+            raise ValueError(f"Misidentification event refers to target '{target_key}' not used by scenario '{scenario_id}'.")
+
+        configs.append({
+            "target_idx": index_by_scene[target_key],
+            "target_scene": target_key,
+            "feature": "Type",
+            "misidentification": event["misidentification"],
+            "start": int(event["start"]),
+            "end": int(event["end"]),
+        })
+
+    return configs
+
+
+def get_scenario_timeline(scenario_id=DEFAULT_SCENARIO_ID):
+    scenario = get_big_scenario(scenario_id)
+    return list(scenario.get("timeline", [75, 90, 110, 130, 150, 210, 225, 250, 290, 300, 375, 450, 525, 600]))
+
+
+def get_scenario_debug_time(scenario_id=DEFAULT_SCENARIO_ID):
+    scenario = get_big_scenario(scenario_id)
+    return int(scenario.get("debug_time", 90))

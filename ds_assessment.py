@@ -227,7 +227,7 @@ class DS_Assessment:
         # 运动学原型。
         # Missile 的高度范围故意放宽：允许低空巡航、末端跃升或对空攻击过程中的中低空爬升。
         proto = {
-            'Missile': {'Speed': (0.75, 0.30), 'Height': (1.20, 3.00)},
+            'Missile': {'Speed': (0.85, 0.35), 'Height': (3.50, 5.00)},
             'Fighter': {'Speed': (1.60, 0.45), 'Height': (8.00, 3.00)},
             'Bomber':  {'Speed': (0.70, 0.20), 'Height': (8.50, 2.50)},
             'Heli':    {'Speed': (0.32, 0.14), 'Height': (1.00, 1.20)},
@@ -254,7 +254,7 @@ class DS_Assessment:
             # 不同类型对“攻击指向性”的敏感程度不同。
             # 导弹最敏感；战斗机次之；轰炸机主要靠高空中速特征，避免被误判成 Missile。
             if tp == 'Missile':
-                factor = 0.35 + 1.80 * attack_directness
+                factor = 0.45 + 2.60 * attack_directness
             elif tp == 'Fighter':
                 factor = 0.80 + 0.45 * attack_directness
             elif tp == 'Bomber':

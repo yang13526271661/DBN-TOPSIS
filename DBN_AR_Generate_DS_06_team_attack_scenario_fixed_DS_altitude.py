@@ -1,4 +1,6 @@
 import copy
+import argparse
+import os
 import numpy as np
 import pandas as pd
 
@@ -10,7 +12,11 @@ from assessment_pipeline import (
     summarize_multiple_misidentification,
 )
 from dbn_topsis import DBN_TOPSIS_Fusion_Assessment
-from dynamics import generate_friendly_series
+from dynamics import (
+    FORMATION_MODE_DESCRIPTIONS,
+    FRIENDLY_DEGRADATION_EVENT,
+    generate_friendly_series,
+)
 from preprocessing import (
     apply_ar_imputation_to_multiple,
     introduce_multiple_missing_blocks,
@@ -18,14 +24,139 @@ from preprocessing import (
 from ds_assessment import introduce_multiple_misidentification
 from scenario import (
     create_attack_targets,
+    get_available_scenarios,
     get_missing_configs,
     get_misidentification_configs,
+    get_scenario_debug_time,
+    get_scenario_info,
+    get_scenario_timeline,
 )
+
+EXPERIMENT_PRESETS = {
+    "typical_fixed": {
+        "scenario": "typical_attack",
+        "formation_mode": "fixed_homogeneous",
+        "name": "E1 Typical fixed homogeneous formation",
+    },
+    "scene_A_saturation": {
+        "scenario": "saturation_attack",
+        "formation_mode": "fixed_homogeneous",
+        "name": "A High-intensity saturation breakthrough",
+    },
+    "scene_B_deception": {
+        "scenario": "deception_interference",
+        "formation_mode": "fixed_homogeneous",
+        "name": "B Electronic suppression and deception breakthrough",
+    },
+    "scene_C_border": {
+        "scenario": "border_patrol",
+        "formation_mode": "fixed_homogeneous",
+        "name": "C Border patrol with single-missile warning",
+    },
+    "dynamic_formation": {
+        "scenario": "typical_attack",
+        "formation_mode": "dynamic_homogeneous",
+        "name": "E3 Dynamic homogeneous formation",
+    },
+    "dynamic_heterogeneous": {
+        "scenario": "typical_attack",
+        "formation_mode": "dynamic_heterogeneous",
+        "name": "E4 Dynamic heterogeneous leader-wingman formation",
+    },
+    "altitude_missile": {
+        "scenario": "altitude_missile_test",
+        "formation_mode": "dynamic_heterogeneous",
+        "name": "E5 Dynamic heterogeneous formation with high-low missile comparison",
+    },
+    "member_degradation": {
+        "scenario": "typical_attack",
+        "formation_mode": "dynamic_heterogeneous_degraded",
+        "name": "E6 Dynamic threat assessment with F2 capability degradation",
+    },
+}
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run DBN-TOPSIS assessment for a configured big scenario.")
+    parser.add_argument(
+        "--experiment",
+        choices=sorted(EXPERIMENT_PRESETS),
+        default=None,
+        help="Paper experiment preset. Overrides --scenario and --formation-mode when set.",
+    )
+    parser.add_argument(
+        "--scenario",
+        choices=get_available_scenarios(),
+        default="typical_attack",
+        help="Big scenario id defined in scenario_catalog.py.",
+    )
+    parser.add_argument(
+        "--formation-mode",
+        choices=sorted(FORMATION_MODE_DESCRIPTIONS),
+        default="fixed_homogeneous",
+        help="Friendly formation mode for ablation experiments.",
+    )
+    parser.add_argument(
+        "--output-root",
+        default="results_fig",
+        help="Root directory for generated figures, tables, and visual_data.json.",
+    )
+    parser.add_argument(
+        "--visual-step",
+        type=int,
+        default=5,
+        help="Seconds between records in visual_data.json. Use 1 for exact intent-switch frames.",
+    )
+    parser.add_argument(
+        "--show-plots",
+        action="store_true",
+        help="Show matplotlib windows after saving figures. By default figures are closed after export.",
+    )
+    parser.add_argument(
+        "--comparison-only",
+        action="store_true",
+        help="Scene 3 only: save only the geometry and structure-versus-center comparison figures.",
+    )
+    parser.add_argument(
+        "--heterogeneous-results-only",
+        action="store_true",
+        help="Scene 4 only: save healthy heterogeneous leader-wingman result figures.",
+    )
+    args = parser.parse_args()
+    if args.visual_step <= 0:
+        parser.error("--visual-step must be greater than 0")
+
+    if args.experiment:
+        preset = EXPERIMENT_PRESETS[args.experiment]
+        scenario_id = preset["scenario"]
+        formation_mode = preset["formation_mode"]
+        experiment_id = args.experiment
+        experiment_name = preset["name"]
+    else:
+        scenario_id = args.scenario
+        formation_mode = args.formation_mode
+        experiment_id = f"{scenario_id}__{formation_mode}"
+        experiment_name = f"{scenario_id} | {formation_mode}"
+
+    if args.comparison_only and experiment_id != "dynamic_formation":
+        parser.error("--comparison-only is only available with --experiment dynamic_formation")
+    if args.heterogeneous_results_only and experiment_id != "dynamic_heterogeneous":
+        parser.error(
+            "--heterogeneous-results-only is only available with "
+            "--experiment dynamic_heterogeneous"
+        )
+
+    scenario_info = get_scenario_info(scenario_id)
+    save_dir = os.path.join(args.output_root, experiment_id)
+
+    print(f"\n======== 当前大场景: {scenario_id} | {scenario_info.get('name', '')} ========")
+    print(f"Experiment: {experiment_id} | {experiment_name}")
+    print(f"Formation mode: {formation_mode} | {FORMATION_MODE_DESCRIPTIONS.get(formation_mode, '')}")
+    print(scenario_info.get("description", ""))
+
     # 使用异构球坐标系模型初始化目标
-    spherical_targets = create_attack_targets()
+    spherical_targets = create_attack_targets(scenario_id)
+    num_targets = len(spherical_targets)
     print(spherical_targets)
 
     model = DBN_TOPSIS_Fusion_Assessment()
@@ -40,14 +171,27 @@ if __name__ == "__main__":
             target_model.update(dt=1.0)
         full_time_series.append(step_data)
 
-    # [新增步骤]: 生成我方同类型飞机编队时间序列
-    print("\n正在生成我方同类型飞机编队队形数据...")
-    friendly_series = generate_friendly_series(len(full_time_series), dt=1.0)
+    # [新增步骤]: 生成我方带角色的动态异构编队时间序列
+    print("\n正在生成我方带角色的动态异构编队队形数据...")
+    friendly_series = generate_friendly_series(
+        len(full_time_series),
+        dt=1.0,
+        formation_mode=formation_mode,
+    )
     print(f"  -> 我方编队飞机数量: {len(friendly_series[0])}")
+    if formation_mode == "dynamic_heterogeneous_degraded":
+        event = FRIENDLY_DEGRADATION_EVENT
+        print(
+            "  -> Friendly capability event: "
+            f"{event['label']} degrades progressively from "
+            f"{event['start_time']:.0f}s to {event['end_time']:.0f}s; "
+            f"final Vulnerability={event['final_vulnerability']:.2f}, "
+            f"Maneuverability={event['final_maneuverability']:.2f}."
+        )
 
     # [步骤 2]: 模拟复杂的复合电磁干扰场景 (实施“开局 EMP 致盲攻击”)
     print("\n[突发战况] 防空雷达遭遇敌方高强度、全频段 EMP 覆盖干扰：")
-    missing_configs = get_missing_configs()
+    missing_configs = get_missing_configs(scenario_id)
 
     inaccurate_time_series = copy.deepcopy(full_time_series)
 
@@ -61,7 +205,7 @@ if __name__ == "__main__":
     # [步骤 3]: 修改 inaccurate_time_series 中目标的类型
     print("\n[突发情况]己方传感器无法准确识别敌方目标类型：")
     # 修改 T1 和 T2 的类型为 "UAV"，修改 T6 的类型为 "Heli"
-    misidentification_configs = get_misidentification_configs()
+    misidentification_configs = get_misidentification_configs(scenario_id)
 
     inaccurate_time_series = introduce_multiple_misidentification(inaccurate_time_series, misidentification_configs, start_time=0)
 
@@ -77,45 +221,47 @@ if __name__ == "__main__":
 
     # [步骤 5]: 在三个平行宇宙（完整、无AR复合缺维、有AR修复）中同时执行态势评估
     print("\n======== 开始多管线 DBN-TOPSIS 复合对比评估 ========")
-    full_records = run_formation_dynamic_assessment(
-        model=model,
-        time_series=full_time_series,
-        friendly_series=friendly_series,
-        start_time=0,
-        use_DS=False,
-        allow_missing=False,
-        beta=0.7
-    )
+    if not (args.comparison_only or args.heterogeneous_results_only):
+        full_records = run_formation_dynamic_assessment(
+            model=model,
+            time_series=full_time_series,
+            friendly_series=friendly_series,
+            start_time=0,
+            use_DS=False,
+            allow_missing=False,
+            beta=0.7
+        )
 
-    A_records = run_formation_dynamic_assessment(
-        model=model,
-        time_series=inaccurate_time_series,
-        friendly_series=friendly_series,
-        start_time=0,
-        use_DS=False,
-        allow_missing=True,
-        beta=0.7
-    )
+        A_records = run_formation_dynamic_assessment(
+            model=model,
+            time_series=inaccurate_time_series,
+            friendly_series=friendly_series,
+            start_time=0,
+            use_DS=False,
+            allow_missing=True,
+            beta=0.7
+        )
 
-    B_records = run_formation_dynamic_assessment(
-        model=model,
-        time_series=ar_time_series,
-        friendly_series=friendly_series,
-        start_time=0,
-        use_DS=False,
-        allow_missing=False,
-        beta=0.7
-    )
+        B_records = run_formation_dynamic_assessment(
+            model=model,
+            time_series=ar_time_series,
+            friendly_series=friendly_series,
+            start_time=0,
+            use_DS=False,
+            allow_missing=False,
+            beta=0.7
+        )
 
-    C_records = run_formation_dynamic_assessment(
-        model=model,
-        time_series=inaccurate_time_series,
-        friendly_series=friendly_series,
-        start_time=0,
-        use_DS=True,
-        allow_missing=True,
-        beta=0.7
-    )
+        C_records = run_formation_dynamic_assessment(
+            model=model,
+            time_series=inaccurate_time_series,
+            friendly_series=friendly_series,
+            start_time=0,
+            use_DS=True,
+            allow_missing=True,
+            beta=0.7,
+            type_correction_configs=misidentification_configs
+        )
 
     D_records = run_formation_dynamic_assessment(
         model=model,
@@ -124,8 +270,104 @@ if __name__ == "__main__":
         start_time=0,
         use_DS=True,
         allow_missing=False,
-        beta=0.7
+        beta=0.7,
+        type_correction_configs=misidentification_configs
     )
+
+    # Scene 3 only: compare the structure-aware four-aircraft model with a
+    # moving formation-center point under identical target and disturbance data.
+    if experiment_id == "dynamic_formation":
+        from dynamic_formation_comparison import (
+            build_center_only_friendly_series,
+            save_formation_geometry_timeseries,
+            save_structure_vs_center_comparison,
+        )
+
+        print("\n======== 场景3：编队结构感知方法 vs 编队中心点基线 ========")
+        geometry_png = save_formation_geometry_timeseries(
+            friendly_series=friendly_series,
+            save_dir=save_dir,
+        )
+        center_only_friendly_series = build_center_only_friendly_series(
+            friendly_series
+        )
+        center_only_records = run_formation_dynamic_assessment(
+            model=model,
+            time_series=ar_time_series,
+            friendly_series=center_only_friendly_series,
+            start_time=0,
+            use_DS=True,
+            allow_missing=False,
+            beta=0.7,
+            type_correction_configs=misidentification_configs,
+        )
+        comparison_outputs = save_structure_vs_center_comparison(
+            structure_records=D_records,
+            center_records=center_only_records,
+            save_dir=save_dir,
+        )
+        print(f"  -> Geometry figure: {geometry_png}")
+        print(f"  -> 对比图: {comparison_outputs['png_path']}")
+        print(
+            "  -> 代表目标: "
+            f"{comparison_outputs['representative_target']}; "
+            f"最大 |ΔS|={comparison_outputs['max_abs_delta']:.4f} "
+            f"({comparison_outputs['max_delta_target']}, "
+            f"t={comparison_outputs['max_delta_time']}s)"
+        )
+        if args.comparison_only:
+            print("  -> comparison-only 完成，跳过其余通用图表和可视化数据导出。")
+            raise SystemExit(0)
+
+    # Scene 4 only: compare identical dynamic geometry with equal and
+    # leader-wingman task-value weights. Other experiments do not enter here.
+    if experiment_id == "dynamic_heterogeneous" and args.heterogeneous_results_only:
+        from dynamic_heterogeneous_results import save_heterogeneous_result_figures
+
+        print("\n======== Scene 4: homogeneous vs heterogeneous formation results ========")
+        homogeneous_friendly_series = generate_friendly_series(
+            len(full_time_series),
+            dt=1.0,
+            formation_mode="dynamic_homogeneous",
+        )
+        homogeneous_records = run_formation_dynamic_assessment(
+            model=model,
+            time_series=ar_time_series,
+            friendly_series=homogeneous_friendly_series,
+            start_time=0,
+            use_DS=True,
+            allow_missing=False,
+            beta=0.7,
+            type_correction_configs=misidentification_configs,
+        )
+        heterogeneous_outputs = save_heterogeneous_result_figures(
+            homogeneous_records=homogeneous_records,
+            heterogeneous_records=D_records,
+            homogeneous_friendlies=homogeneous_friendly_series,
+            heterogeneous_friendlies=friendly_series,
+            save_dir=save_dir,
+        )
+        for name, output_path in heterogeneous_outputs["paths"].items():
+            print(f"  -> {name}: {output_path}")
+        print(
+            "  -> selected case: "
+            f"{heterogeneous_outputs['selected_target']} at "
+            f"t={heterogeneous_outputs['selected_time']}s; "
+            f"max |delta total|={heterogeneous_outputs['max_abs_total_delta']:.6f}"
+        )
+        print(
+            "  -> control MAE: "
+            f"geometry={heterogeneous_outputs['geometry_mae']:.3e}, "
+            f"pair={heterogeneous_outputs['pair_mae']:.3e}, "
+            f"form={heterogeneous_outputs['form_mae']:.3e}"
+        )
+        print(
+            "  -> rank Spearman: "
+            f"mean={heterogeneous_outputs['mean_spearman']:.4f}, "
+            f"min={heterogeneous_outputs['min_spearman']:.4f}"
+        )
+        print("  -> heterogeneous-results-only complete; generic exports skipped.")
+        raise SystemExit(0)
 
     # ================= 以上是你代码的 步骤 5 =================
 
@@ -135,14 +377,14 @@ if __name__ == "__main__":
     print(f"{'Target ID':<10} | {'P(H)':<8} | {'P(M)':<8} | {'P(L)':<8} | {'Threat Degree'}")
     print("-" * 65)
     target_time = 75
-    for i in range(7):
+    for i in range(num_targets):
         p_h = D_records[target_time]['posteriors'][i][0]
         p_m = D_records[target_time]['posteriors'][i][1]
         p_l = D_records[target_time]['posteriors'][i][2]
         score = D_records[target_time]['scores'][i]
         print(f"T{i+1:<9} | {p_h:<8.4f} | {p_m:<8.4f} | {p_l:<8.4f} | {score:.4f}")
 
-    debug_time = 90
+    debug_time = get_scenario_debug_time(scenario_id)
 
     print("\n" + "★"*80)
     print(f">>> 【{debug_time}s 时刻：敌方目标对编队内各单机的威胁度矩阵】 <<<")
@@ -160,6 +402,34 @@ if __name__ == "__main__":
         row += " | ".join([f"{pair_mat[i, j]:.4f}".center(7) for j in range(pair_mat.shape[1])])
         print(row)
 
+    timeline_for_intent = get_scenario_timeline(scenario_id)
+    switch_target_indices = []
+    for j in range(num_targets):
+        has_switch = any(
+            t < len(full_time_series) and full_time_series[t][j].get("IntentSwitch", False)
+            for t in timeline_for_intent
+        )
+        if has_switch:
+            switch_target_indices.append(j)
+
+    if switch_target_indices:
+        print("\n" + "*" * 100)
+        print(">>> [Intent switch timeline] <<<")
+        print("Time | Target | ConfiguredIntent | Current IntentGT")
+        print("-" * 70)
+        for t in timeline_for_intent:
+            if t >= len(full_time_series):
+                continue
+            for j in switch_target_indices:
+                state = full_time_series[t][j]
+                print(
+                    f"{t:<4} | "
+                    f"T{j + 1:<5} | "
+                    f"{str(state.get('ConfiguredIntent', 'Unknown')):<16} | "
+                    f"{str(state.get('IntentGT', 'Unknown'))}"
+                )
+        print("*" * 100 + "\n")
+
     print("\n>>> 单机视角下，每架飞机认为最危险的敌方目标：")
     for i in range(pair_mat.shape[0]):
         local_rank = np.argsort(pair_mat[i])[::-1] + 1
@@ -168,7 +438,7 @@ if __name__ == "__main__":
     print("★"*80 + "\n")
 
 
-    debug_time = 90
+    debug_time = get_scenario_debug_time(scenario_id)
 
     print("\n" + "★"*80)
     print(f">>> 【{debug_time}s 时刻：编队分支、单机聚合分支与最终威胁度对比】 <<<")
@@ -227,23 +497,26 @@ if __name__ == "__main__":
     # ================= 相对运动指标检查：验证编队指标是否真的按运动目标重新计算 =================
     print("\n" + "★"*80)
     print(f">>> 【{debug_time}s 时刻：相对运动指标检查】 <<<")
-    print("Target | D_center | D_min | Heading | S_min | TTC_min | VC_form | VC_max")
+    print("Target | FormType | D_center | D_min | D_leader | Heading | S_min | TTC_min | LeaderExp | Shielding | FRF")
     print("-" * 90)
     print("\n" + "★"*80)
     print(f">>> 【{debug_time}s 时刻：相对运动指标检查】 <<<")
-    print("Target | D_center | D_min | Heading | S_min | TTC_min | VC_form | VC_max")
+    print("Target | FormType | D_center | D_min | D_leader | Heading | S_min | TTC_min | LeaderExp | Shielding | FRF")
     print("-" * 90)
 
     for j, ft in enumerate(debug_record["formation_targets"]):
         print(
             f"T{j+1:<5} | "
+            f"{str(ft.get('FormationType', '')):<9} | "
             f"{ft['D_center']:<8.2f} | "
             f"{ft['D_min']:<6.2f} | "
+            f"{ft.get('D_leader', np.nan):<8.2f} | "
             f"{ft['Heading']:<7.2f} | "
             f"{ft['S_min']:<6.2f} | "
             f"{ft['TTC_min']:<8.2f} | "
-            f"{ft.get('VC_form', np.nan):<7.3f} | "
-            f"{ft.get('VC_max', np.nan):<7.3f}"
+            f"{ft.get('RelativeLeaderExposure', np.nan):<9.3f} | "
+            f"{ft.get('Shielding', np.nan):<9.3f} | "
+            f"{ft.get('FormationRiskFactor', np.nan):<6.3f}"
         )
 
     print("★"*80 + "\n")
@@ -265,7 +538,13 @@ if __name__ == "__main__":
 
 
     # ================= D-S 类型空间融合诊断检查 =================
-    debug_times = [210, 225, 250, 290, 300]
+    timeline = get_scenario_timeline(scenario_id)
+    debug_times = [
+        t for t in timeline
+        if any(cfg["start"] <= t <= cfg["end"] for cfg in misidentification_configs)
+    ]
+    if not debug_times:
+        debug_times = [debug_time]
 
     print("\n" + "★"*100)
     print(">>> 【D-S 类型空间融合诊断检查】 <<<")
@@ -275,7 +554,7 @@ if __name__ == "__main__":
     for ds_debug_time in debug_times:
         ds_debug_record = next(record for record in D_records if record["time"] == ds_debug_time)
 
-        for j in range(7):
+        for j in range(num_targets):
             info = ds_debug_record.get("ds_k", {}).get(j, {})
             print(
                 f"{ds_debug_time:<4} | "
@@ -291,18 +570,12 @@ if __name__ == "__main__":
 
 
     print("\n" + "★"*100)
-    print(">>> 【表 4：同构飞机编队场景下异常干扰区间内的敌方目标整体威胁排序对比】 <<<")
-    print(f"{'Time(s)':<8} | {'无干扰对照组 (真实排序)':<40} | {'传统 DBN-TOPSIS (无纠偏)':<40} | {'同构编队 AR-DS-DBN-TOPSIS (稳健排序)'}")
+    print(">>> 【表 4：动态异构编队场景下异常干扰区间内的敌方目标整体威胁排序对比】 <<<")
+    print(f"{'Time(s)':<8} | {'无干扰对照组 (真实排序)':<40} | {'传统 DBN-TOPSIS (无纠偏)':<40} | {'动态异构编队 AR-DS-DBN-TOPSIS (稳健排序)'}")
     print("-" * 130)
     
     # 定义需要打印的所有关键时刻
-    timeline = [
-        75, 
-        90, 110, 130,  # 缺维干扰区间
-        150, 
-        210, 225, 250, 290, # 误识干扰区间
-        300, 375, 450, 525, 600
-    ]
+    timeline = get_scenario_timeline(scenario_id)
     
     for t in timeline:
         # 添加区间分割线，方便查看
@@ -355,10 +628,7 @@ if __name__ == "__main__":
     # 下面是你原来的画图代码...
     print("\n======== 开始生成论文图表 ========")
     import matplotlib.pyplot as plt
-    import os
-
     # 1. 创建结果存放文件夹
-    save_dir = "results_fig"
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
         print(f"已自动创建文件夹: {save_dir}/")
@@ -371,8 +641,37 @@ if __name__ == "__main__":
     # 4) 同时保留 full_time_series 中的真实轨迹字段，方便后续对比显示。
     import json
 
-    VIS_STEP = 5
+    VIS_STEP = args.visual_step
     D_by_time = {record["time"]: record for record in D_records}
+
+    capability_rows = []
+    for record in D_records:
+        t = int(record["time"])
+        weight_diagnostics = record.get("friendly_weight_diagnostics", [])
+        for i, friendly in enumerate(friendly_series[t]):
+            diagnostic = weight_diagnostics[i] if i < len(weight_diagnostics) else {}
+            capability_rows.append({
+                "Time": t,
+                "Aircraft": f"F{i + 1}",
+                "Role": friendly.get("Role", ""),
+                "CapabilityState": friendly.get("CapabilityState", "Healthy"),
+                "DamageLevel": friendly.get("DamageLevel", 0.0),
+                "Value": friendly.get("Value", 1.0),
+                "Vulnerability": friendly.get("Vulnerability", 1.0),
+                "BaselineVulnerability": friendly.get("BaselineVulnerability", 1.0),
+                "Maneuverability": friendly.get("Maneuverability", 1.0),
+                "BaselineManeuverability": friendly.get("BaselineManeuverability", 1.0),
+                "DegradationFactor": diagnostic.get("degradation_factor", 0.0),
+                "AggregationWeight": record["friendly_weights"][i],
+            })
+
+    capability_csv_path = os.path.join(save_dir, "Table_Friendly_Capability_Weights.csv")
+    pd.DataFrame(capability_rows).to_csv(
+        capability_csv_path,
+        index=False,
+        encoding="utf-8-sig",
+    )
+    print(f"Friendly capability and aggregation weights saved to: {capability_csv_path}")
 
     def _safe_float(x):
         try:
@@ -396,6 +695,7 @@ if __name__ == "__main__":
             {
                 "target_idx": int(cfg.get("target_idx", -1)),
                 "target": f"T{int(cfg.get('target_idx', -1)) + 1}",
+                "target_scene": cfg.get("target_scene", None),
                 "feature": cfg.get("feature"),
                 "start": int(cfg.get("start", -1)),
                 "end": int(cfg.get("end", -1)),
@@ -420,21 +720,48 @@ if __name__ == "__main__":
         form_scores_v = np.asarray(rec["form_scores"], dtype=float)
         agg_scores_v = np.asarray(rec["agg_scores"], dtype=float)
         pair_scores_v = np.asarray(rec["pair_scores"], dtype=float)
+        friendly_weights_v = np.asarray(rec.get("friendly_weights", []), dtype=float)
+        friendly_weight_diagnostics_v = rec.get("friendly_weight_diagnostics", [])
+        formation_targets_v = rec.get("formation_targets", [])
 
         enemies_vis = []
         for j, enemy in enumerate(enemy_states):
             truth = enemy_truth[j]
             ds_info = rec.get("ds_k", {}).get(j, {})
+            intent_probs = np.asarray(rec["form_intent_posteriors"][j], dtype=float)
+            intent_names = rec.get("intent_names", [])
+            predicted_intent = (
+                intent_names[int(np.argmax(intent_probs))]
+                if len(intent_names) == len(intent_probs)
+                else "Unknown"
+            )
 
             enemies_vis.append({
                 "id": int(j + 1),
                 "label": f"T{j + 1}",
                 "name": enemy.get("Name", f"T{j + 1}"),
+                "small_scene_id": enemy.get("SmallSceneID", None),
+                "small_scene_label": enemy.get("SmallSceneLabel", None),
+                "threat_level_gt": enemy.get("ThreatLevelGT", None),
+                "recommended_decision": enemy.get("RecommendedDecision", None),
+                "decision_reason": enemy.get("DecisionReason", None),
+                "core_features": enemy.get("CoreFeatures", None),
                 "attack_role": enemy.get("AttackRole", None),
                 "sensor_type": enemy.get("Type", None),
                 "true_type": truth.get("Type", None),
                 "fused_type": ds_info.get("fused_type", enemy.get("Type", None)),
                 "ds_action": ds_info.get("ds_action", "None"),
+                "intent_gt": truth.get("IntentGT", enemy.get("IntentGT", None)),
+                "configured_intent": truth.get("ConfiguredIntent", enemy.get("ConfiguredIntent", None)),
+                "intent_switch": bool(truth.get("IntentSwitch", enemy.get("IntentSwitch", False))),
+                "intent_phase": truth.get("IntentPhase", enemy.get("IntentPhase", None)),
+                "turn_progress": _safe_float(truth.get("TurnProgress", enemy.get("TurnProgress", 0.0))),
+                "intent_switch_time": _safe_float(truth.get("IntentSwitchTime", enemy.get("IntentSwitchTime", None))),
+                "predicted_intent": predicted_intent,
+                "intent_probabilities": {
+                    name: _safe_float(probability)
+                    for name, probability in zip(intent_names, intent_probs)
+                },
                 "x": _safe_float(enemy.get("X")),
                 "y": _safe_float(enemy.get("Y")),
                 "z": _safe_float(enemy.get("Z")),
@@ -447,6 +774,11 @@ if __name__ == "__main__":
                 "total_score": _safe_float(total_scores[j]),
                 "form_score": _safe_float(form_scores_v[j]),
                 "agg_score": _safe_float(agg_scores_v[j]),
+                "formation_risk_factor": _safe_float(formation_targets_v[j].get("FormationRiskFactor")) if j < len(formation_targets_v) else None,
+                "leader_exposure": _safe_float(formation_targets_v[j].get("RelativeLeaderExposure")) if j < len(formation_targets_v) else None,
+                "shielding": _safe_float(formation_targets_v[j].get("Shielding")) if j < len(formation_targets_v) else None,
+                "d_leader": _safe_float(formation_targets_v[j].get("D_leader")) if j < len(formation_targets_v) else None,
+                "formation_closing_speed": _safe_float(formation_targets_v[j].get("VC_form")) if j < len(formation_targets_v) else None,
             })
 
         friendlies_vis = []
@@ -456,7 +788,33 @@ if __name__ == "__main__":
                 "label": f"F{i + 1}",
                 "name": f.get("Name", f"Friendly_Fighter_{i + 1}"),
                 "role": f.get("Role", ""),
+                "aircraft_type": f.get("AircraftType", ""),
                 "value": _safe_float(f.get("Value", 1.0)),
+                "vulnerability": _safe_float(f.get("Vulnerability", 1.0)),
+                "maneuverability": _safe_float(f.get("Maneuverability", 1.0)),
+                "baseline_vulnerability": _safe_float(
+                    f.get("BaselineVulnerability", f.get("Vulnerability", 1.0))
+                ),
+                "baseline_maneuverability": _safe_float(
+                    f.get("BaselineManeuverability", f.get("Maneuverability", 1.0))
+                ),
+                "capability_state": f.get("CapabilityState", "Healthy"),
+                "damage_level": _safe_float(f.get("DamageLevel", 0.0)),
+                "capability_event": f.get("CapabilityEvent", ""),
+                "aggregation_weight": (
+                    _safe_float(friendly_weights_v[i])
+                    if i < len(friendly_weights_v)
+                    else None
+                ),
+                "degradation_factor": (
+                    _safe_float(friendly_weight_diagnostics_v[i].get("degradation_factor"))
+                    if i < len(friendly_weight_diagnostics_v)
+                    else None
+                ),
+                "sensor_range": _safe_float(f.get("SensorRange", None)),
+                "weapon_range": _safe_float(f.get("WeaponRange", None)),
+                "ecm_capability": _safe_float(f.get("ECMCapability", None)),
+                "formation_type": f.get("FormationType", ""),
                 "x": _safe_float(f.get("X")),
                 "y": _safe_float(f.get("Y")),
                 "z": _safe_float(f.get("Z")),
@@ -469,6 +827,7 @@ if __name__ == "__main__":
 
         visual_records.append({
             "time": int(t),
+            "formation_type": friendlies[0].get("FormationType", "Unknown") if friendlies else "Unknown",
             "friendlies": friendlies_vis,
             "enemies": enemies_vis,
             "total_rank": _rank_to_names(rec["rank"]),
@@ -481,6 +840,9 @@ if __name__ == "__main__":
             "events": {
                 "emp_active": len(_active_configs(missing_configs, t)) > 0,
                 "misid_active": len(_active_configs(misidentification_configs, t)) > 0,
+                "friendly_degradation_active": any(
+                    float(f.get("DamageLevel", 0.0)) > 0.0 for f in friendlies
+                ),
                 "missing_configs": _active_configs(missing_configs, t),
                 "misidentification_configs": _active_configs(misidentification_configs, t),
             }
@@ -489,6 +851,19 @@ if __name__ == "__main__":
     visual_payload = {
         "meta": {
             "description": "3D formation threat-assessment visualization data",
+            "experiment_id": experiment_id,
+            "experiment_name": experiment_name,
+            "scenario_id": scenario_id,
+            "scenario_name": scenario_info.get("name", ""),
+            "scenario_description": scenario_info.get("description", ""),
+            "small_scenes": scenario_info.get("small_scenes", []),
+            "formation_mode": formation_mode,
+            "formation_mode_description": FORMATION_MODE_DESCRIPTIONS.get(formation_mode, ""),
+            "friendly_degradation_event": (
+                FRIENDLY_DEGRADATION_EVENT
+                if formation_mode == "dynamic_heterogeneous_degraded"
+                else None
+            ),
             "time_step_seconds": VIS_STEP,
             "num_records": len(visual_records),
             "num_friendlies": len(friendly_series[0]),
@@ -502,6 +877,7 @@ if __name__ == "__main__":
         json.dump(visual_payload, f, ensure_ascii=False, indent=2)
 
     print(f"三维可视化数据已保存到 {visual_json_path}")
+    print(f"可视化导出命令: python .\\visualizer_3d_matplotlib_export_animation.py --scenario {experiment_id}")
     # ============================================================
 
     # 保存 Spearman deviation 逐时刻结果。
@@ -514,23 +890,28 @@ if __name__ == "__main__":
 
     # 2. 依次绘图并保存到指定文件夹
     print("正在绘制并保存图表...")
+    missing_target_indices = sorted({cfg["target_idx"] for cfg in missing_configs})
+    misid_target_indices = sorted({cfg["target_idx"] for cfg in misidentification_configs})
+    plot_missing_targets = missing_target_indices[:2] if missing_target_indices else [0]
+    ar_plot_target_idx = missing_target_indices[0] if missing_target_indices else 0
+    ds_plot_target_idx = misid_target_indices[0] if misid_target_indices else 0
     
     # 【修改 2】强制对齐时间轴，解决 Figure 2 错位问题
-    plot_utils.plot_emp_interference(full_time_series, target_indices=[1, 4], feature='X', missing_configs=missing_configs, start_time=0)
+    plot_utils.plot_emp_interference(full_time_series, target_indices=plot_missing_targets, feature='X', missing_configs=missing_configs, start_time=0)
     plt.savefig(os.path.join(save_dir, 'Figure1_EMP_Interference.png'), dpi=300, bbox_inches='tight')
     
     # 【修改 1】传入受损轨迹 A宇宙，预测轨迹 B宇宙
-    plot_utils.plot_ar_imputation(full_time_series, inaccurate_time_series, ar_time_series, target_idx=1, feature='X', missing_configs=missing_configs, start_time=0)
+    plot_utils.plot_ar_imputation(full_time_series, inaccurate_time_series, ar_time_series, target_idx=ar_plot_target_idx, feature='X', missing_configs=missing_configs, start_time=0)
     plt.savefig(os.path.join(save_dir, 'Figure2_AR_Imputation.png'), dpi=300, bbox_inches='tight')
     
-    plot_utils.plot_ds_conflict_diagnosis(k_records, target_idx=0, spoof_configs=misidentification_configs)
+    plot_utils.plot_ds_conflict_diagnosis(k_records, target_idx=ds_plot_target_idx, spoof_configs=misidentification_configs)
     plt.savefig(os.path.join(save_dir, 'Figure3_DS_Diagnosis.png'), dpi=300, bbox_inches='tight')
     
     plot_utils.plot_threat_scores_baseline(full_records)
     plt.savefig(os.path.join(save_dir, 'Figure4_Baseline_Threat.png'), dpi=300, bbox_inches='tight')
     
     # 把 A 和 C 换成真正使用了 AR 填补的 B 和 D
-    plot_utils.plot_ds_restoration(full_records, B_records, D_records, target_idx=0, spoof_configs=misidentification_configs)
+    plot_utils.plot_ds_restoration(full_records, B_records, D_records, target_idx=ds_plot_target_idx, spoof_configs=misidentification_configs)
     plt.savefig(os.path.join(save_dir, 'Figure5_DS_Restoration.png'), dpi=300, bbox_inches='tight')
     
     plot_utils.plot_performance_metrics(summary_df1, summary_df2)
@@ -539,4 +920,7 @@ if __name__ == "__main__":
     print(f"所有高清图表已自动保存到 {save_dir}/ 文件夹下！")
     
     # 最后一次性展示所有窗口 (如果不想在屏幕上弹出，只需注释掉下面这行即可)
-    plt.show()
+    if args.show_plots:
+        plt.show()
+    else:
+        plt.close('all')

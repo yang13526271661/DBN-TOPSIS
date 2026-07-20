@@ -5,9 +5,58 @@ from ds_assessment import DS_Assessment
 from dynamics import (
     build_formation_target,
     build_pairwise_target,
-    normalize_scores,
     topsis_closeness,
 )
+
+
+def compute_friendly_aggregation_weights(friendlies):
+    """Return role-value weights corrected by relative capability degradation."""
+    raw_weights = []
+    diagnostics = []
+
+    for friendly in friendlies:
+        value = max(float(friendly.get("Value", 1.0)), 0.0)
+        vulnerability = max(float(friendly.get("Vulnerability", 1.0)), 0.0)
+        maneuverability = max(float(friendly.get("Maneuverability", 1.0)), 1e-6)
+        baseline_vulnerability = max(
+            float(friendly.get("BaselineVulnerability", vulnerability)),
+            1e-6,
+        )
+        baseline_maneuverability = max(
+            float(friendly.get("BaselineManeuverability", maneuverability)),
+            1e-6,
+        )
+
+        vulnerability_increase = max(
+            vulnerability / baseline_vulnerability - 1.0,
+            0.0,
+        )
+        maneuverability_loss = max(
+            1.0 - maneuverability / baseline_maneuverability,
+            0.0,
+        )
+        degradation_factor = 0.5 * vulnerability_increase + 0.5 * maneuverability_loss
+        raw_weight = value * (1.0 + degradation_factor)
+        raw_weights.append(raw_weight)
+        diagnostics.append({
+            "vulnerability_increase": vulnerability_increase,
+            "maneuverability_loss": maneuverability_loss,
+            "degradation_factor": degradation_factor,
+            "raw_weight": raw_weight,
+        })
+
+    raw_weights = np.asarray(raw_weights, dtype=float)
+    total = float(np.sum(raw_weights))
+    if total <= 1e-12:
+        weights = np.full(len(friendlies), 1.0 / max(len(friendlies), 1), dtype=float)
+    else:
+        weights = raw_weights / total
+
+    for idx, diagnostic in enumerate(diagnostics):
+        diagnostic["normalized_weight"] = float(weights[idx])
+
+    return weights, diagnostics
+
 
 # ================= 5. 评估流程控制器 =================
 def run_dynamic_assessment(model, time_series, start_time=0, use_DS=False, allow_missing=False):
@@ -64,7 +113,8 @@ def run_formation_dynamic_assessment(
     allow_missing=True,
     beta=0.7,
     lambdas=(0.5, 0.3, 0.2),
-    tau=0.1
+    tau=0.1,
+    type_correction_configs=None,
 ):
     """
     同构飞机编队威胁评估主流程。
@@ -84,6 +134,19 @@ def run_formation_dynamic_assessment(
 
     records = []
 
+    def is_type_correction_active(target_idx, current_time):
+        if not type_correction_configs:
+            return False
+
+        for cfg in type_correction_configs:
+            if cfg.get("feature", "Type") != "Type":
+                continue
+            if int(cfg.get("target_idx", -1)) != int(target_idx):
+                continue
+            if int(cfg.get("start", 10**9)) <= int(current_time) <= int(cfg.get("end", -10**9)):
+                return True
+        return False
+
     for t_idx in range(num_steps):
         current_time = start_time + t_idx
         enemies = time_series[t_idx]
@@ -97,7 +160,7 @@ def run_formation_dynamic_assessment(
             formation_target = build_formation_target(enemy, friendlies)
             form_ev = model.fuzzify_target_data(formation_target, allow_missing=allow_missing)
 
-            if use_DS:
+            if use_DS and is_type_correction_active(j, current_time):
                 corrected_id_ev, ds_info = ds_model.ds_correct_id_evidence_by_type_fusion(
                     model=model,
                     raw_enemy_state=enemy,
@@ -114,6 +177,16 @@ def run_formation_dynamic_assessment(
                     "K_type_after": ds_info["K_type_after"],
                     "ds_action": ds_info["ds_action"],
                 }
+            elif use_DS:
+                sensor_type = enemy.get("Type", None)
+                fixed_id_evidences[j] = form_ev.get("ID", None)
+                ds_k_info[j] = {
+                    "sensor_type": sensor_type,
+                    "fused_type": sensor_type,
+                    "K_type": 0.0,
+                    "K_type_after": 0.0,
+                    "ds_action": "keep_sensor_type_outside_misid_window",
+                }
             else:
                 fixed_id_evidences[j] = form_ev.get("ID", None)
 
@@ -124,30 +197,9 @@ def run_formation_dynamic_assessment(
 
         for i, friendly in enumerate(friendlies):
             prob_matrix_i = []
-            local_factors_i = []
 
             for j, enemy in enumerate(enemies):
                 pair_target = build_pairwise_target(enemy, friendly)
-
-                # ===== 单机局部几何修正因子 =====
-                # 目的：在 DBN-TOPSIS 已经接近饱和时，增强“某个目标更靠近某架飞机、
-                # 更快接近某架飞机、TTC 更小”的局部差异。
-                ttc = pair_target.get("TTC", 1e6)
-                dist = pair_target.get("Distance", 1e6)
-                vc = pair_target.get("ClosingSpeed", 0.0)
-
-                ttc_factor = 1.0 / (1.0 + ttc / 120.0)
-                dist_factor = 1.0 / (1.0 + dist / 120.0)
-                vc_factor = max(vc, 0.0) / 0.340
-
-                local_factor = (
-                    1.0
-                    + 0.35 * ttc_factor
-                    + 0.20 * dist_factor
-                    + 0.10 * vc_factor
-                )
-                local_factors_i.append(local_factor)
-                # =================================
 
                 pair_ev = model.fuzzify_target_data(
                     pair_target,
@@ -171,10 +223,8 @@ def run_formation_dynamic_assessment(
 
             prob_matrix_i = np.array(prob_matrix_i)
             raw_pair_scores = topsis_closeness(prob_matrix_i)
-            local_factors_i = np.array(local_factors_i, dtype=float)
 
-            # 注意：这里不归一化，因为后面 c_max/c_avg/c_soft 会统一归一化。
-            pair_scores[i, :] = raw_pair_scores * local_factors_i
+            pair_scores[i, :] = raw_pair_scores
             
         # 编队整体分支
         form_posteriors = np.zeros((num_enemy, 3), dtype=float)
@@ -201,31 +251,24 @@ def run_formation_dynamic_assessment(
             form_priors[j] = posterior @ model.transition_matrix
 
         form_scores_raw = topsis_closeness(form_posteriors)
-        form_scores = normalize_scores(form_scores_raw)
+        form_scores = form_scores_raw
 
-        # 编队结构修正：覆盖比例越大、TTC越小，整体威胁越高
-        structure_factors = []
-        for ft in form_targets_debug:
-            cover = ft.get("CoverRatio", 0.0)
-            ttc = ft.get("TTC_min", 1e6)
-
-            ttc_factor = 1.0 / (1.0 + ttc / 100.0)
-            cover_factor = cover
-
-            factor = 1.0 + 0.3 * cover_factor + 0.3 * ttc_factor
-            structure_factors.append(factor)
-
-        structure_factors = np.array(structure_factors)
-        form_scores = normalize_scores(form_scores * structure_factors)
+        # 记录编队结构风险因子，供可视化和后续分析使用；此处不直接改变分数大小。
+        formation_risk_factors = np.array([
+            ft.get("FormationRiskFactor", 0.0)
+            for ft in form_targets_debug
+        ], dtype=float)
 
         # 单机威胁矩阵聚合
-        c_max = np.max(pair_scores, axis=0)
-        c_avg = np.mean(pair_scores, axis=0)
-        c_soft = tau * np.log(np.mean(np.exp(pair_scores / tau), axis=0) + 1e-10)
+        friendly_weights, friendly_weight_diagnostics = compute_friendly_aggregation_weights(
+            friendlies
+        )
 
-        c_max = normalize_scores(c_max)
-        c_avg = normalize_scores(c_avg)
-        c_soft = normalize_scores(c_soft)
+        c_max = np.max(pair_scores, axis=0)
+        c_avg = np.sum(pair_scores * friendly_weights[:, None], axis=0)
+        c_soft = tau * np.log(
+            np.sum(friendly_weights[:, None] * np.exp(pair_scores / tau), axis=0) + 1e-10
+        )
 
         lambda_max, lambda_avg, lambda_soft = lambdas
         agg_scores = (
@@ -233,11 +276,9 @@ def run_formation_dynamic_assessment(
             + lambda_avg * c_avg
             + lambda_soft * c_soft
         )
-        agg_scores = normalize_scores(agg_scores)
 
         # 最终整体编队威胁度
         total_scores = beta * form_scores + (1.0 - beta) * agg_scores
-        total_scores = normalize_scores(total_scores)
 
         rank = np.argsort(total_scores)[::-1] + 1
 
@@ -253,11 +294,14 @@ def run_formation_dynamic_assessment(
             "pair_scores": pair_scores.copy(),
             "pair_posteriors": pair_posteriors.copy(),
             "pair_intent_posteriors": pair_intent_posteriors.copy(),
+            "friendly_weights": friendly_weights.copy(),
+            "friendly_weight_diagnostics": friendly_weight_diagnostics,
 
             # 编队分支
             "form_scores": form_scores.copy(),
             "agg_scores": agg_scores.copy(),
             "form_intent_posteriors": form_intent_posteriors.copy(),
+            "formation_risk_factors": formation_risk_factors.copy(),
 
             # 意图名称
             "intent_names": model.intent_names,

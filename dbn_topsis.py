@@ -277,9 +277,5 @@ class DBN_TOPSIS_Fusion_Assessment:
             scores.append(c_i)
             
         scores = np.array(scores)
-        sum_scores = np.sum(scores)
-        if sum_scores == 0:
-            return np.ones(len(scores)) / len(scores)
-        normalized_scores = scores / sum_scores 
-        return normalized_scores
+        return scores
 

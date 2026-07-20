@@ -345,15 +345,25 @@ if __name__ == "__main__":
             heterogeneous_records=D_records,
             homogeneous_friendlies=homogeneous_friendly_series,
             heterogeneous_friendlies=friendly_series,
+            target_series=ar_time_series,
             save_dir=save_dir,
         )
         for name, output_path in heterogeneous_outputs["paths"].items():
             print(f"  -> {name}: {output_path}")
         print(
-            "  -> selected case: "
-            f"{heterogeneous_outputs['selected_target']} at "
-            f"t={heterogeneous_outputs['selected_time']}s; "
-            f"max |delta total|={heterogeneous_outputs['max_abs_total_delta']:.6f}"
+            "  -> member recognition: "
+            f"N={heterogeneous_outputs['valid_samples']}, "
+            f"Top-1={heterogeneous_outputs['top1_accuracy']:.1%}, "
+            f"Top-2={heterogeneous_outputs['top2_coverage']:.1%}, "
+            f"median local spread={heterogeneous_outputs['median_local_spread']:.4f}"
+        )
+        key_event = heterogeneous_outputs["key_event"]
+        print(
+            "  -> key event: "
+            f"{key_event['target']} at t={key_event['time']}s, "
+            f"physical={key_event['physical_member']}, "
+            f"model={key_event['model_member']}, "
+            f"delta total={key_event['delta_total']:+.6f}"
         )
         print(
             "  -> control MAE: "
@@ -364,7 +374,9 @@ if __name__ == "__main__":
         print(
             "  -> rank Spearman: "
             f"mean={heterogeneous_outputs['mean_spearman']:.4f}, "
-            f"min={heterogeneous_outputs['min_spearman']:.4f}"
+            f"min={heterogeneous_outputs['min_spearman']:.4f}, "
+            f"Top-1 retention={heterogeneous_outputs['top1_retention']:.1%}, "
+            f"Top-3 retention={heterogeneous_outputs['top3_retention']:.1%}"
         )
         print("  -> heterogeneous-results-only complete; generic exports skipped.")
         raise SystemExit(0)

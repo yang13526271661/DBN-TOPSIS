@@ -1,50 +1,38 @@
-"""Scene-4-only result figures for healthy leader-wingman heterogeneity."""
+"""Scene-4-only validation plots for a healthy heterogeneous formation."""
 
+import csv
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 
+from dynamics import build_pairwise_target
 
-STAGES = (
-    (0, 140, "巡航楔形", "#edf4fb"),
-    (140, 260, "第一次转换", "#fff6e8"),
-    (260, 340, "宽域搜索", "#eef8f2"),
-    (340, 460, "第二次转换", "#fff6e8"),
-    (460, 600, "防护队形", "#f3f0fa"),
+
+ROLE_IDS = ("F1", "F2", "F3", "F4")
+ROLE_NAMES = ("F1 长机", "F2 左僚机", "F3 右僚机", "F4 后卫机")
+ROLE_COLORS = ("#d73027", "#2878b5", "#2ca25f", "#7b61a8")
+FORMATION_STAGES = (
+    (0, 140, "巡航楔形", "#eaf2fb"),
+    (140, 260, "第一次转换", "#fff4df"),
+    (260, 340, "宽域搜索", "#eaf7f1"),
+    (340, 460, "第二次转换", "#fff4df"),
+    (460, 600, "防护队形", "#f1edfb"),
 )
-
-ROLE_LABELS = ("F1\n长机", "F2\n左僚机", "F3\n右僚机", "F4\n后卫机")
 
 
 def _set_style():
     plt.rcParams.update({
         "font.sans-serif": ["Microsoft YaHei", "SimHei", "Arial Unicode MS"],
         "axes.unicode_minus": False,
-        "font.size": 9,
-        "axes.titlesize": 10.5,
-        "axes.labelsize": 9.5,
-        "xtick.labelsize": 8.5,
-        "ytick.labelsize": 8.5,
-        "legend.fontsize": 8.5,
-        "axes.linewidth": 0.8,
+        "font.size": 10,
+        "axes.titlesize": 12,
+        "axes.labelsize": 10.5,
+        "xtick.labelsize": 9.5,
+        "ytick.labelsize": 9.5,
+        "legend.fontsize": 9.0,
+        "axes.linewidth": 0.9,
     })
-
-
-def _shade_stages(ax):
-    for start, end, label, color in STAGES:
-        ax.axvspan(start, end, color=color, alpha=0.55, zorder=0)
-        ax.text(
-            (start + end) / 2,
-            1.02,
-            label,
-            transform=ax.get_xaxis_transform(),
-            ha="center",
-            va="bottom",
-            fontsize=7.6,
-        )
-    for boundary in (140, 260, 340, 460):
-        ax.axvline(boundary, color="#999999", linestyle="--", linewidth=0.7)
 
 
 def _stack(records, key):
@@ -73,373 +61,461 @@ def _components(record, target_idx, lambdas, tau, beta):
     c_max = float(np.max(pair))
     c_avg = float(np.sum(weights * pair))
     c_soft = float(tau * np.log(np.sum(weights * np.exp(pair / tau)) + 1e-10))
-    c_agg = float(
+    s_agg = float(
         lambdas[0] * c_max
         + lambdas[1] * c_avg
         + lambdas[2] * c_soft
     )
-    c_form = float(np.asarray(record["form_scores"], dtype=float)[target_idx])
-    c_total = float(beta * c_form + (1.0 - beta) * c_agg)
+    s_form = float(np.asarray(record["form_scores"], dtype=float)[target_idx])
+    s_total = float(beta * s_form + (1.0 - beta) * s_agg)
 
-    recorded_agg = float(np.asarray(record["agg_scores"], dtype=float)[target_idx])
-    recorded_total = float(np.asarray(record["scores"], dtype=float)[target_idx])
-    if not np.isclose(c_agg, recorded_agg, atol=1e-9, rtol=1e-8):
-        raise ValueError("Recomputed aggregation score does not match assessment record.")
-    if not np.isclose(c_total, recorded_total, atol=1e-9, rtol=1e-8):
-        raise ValueError("Recomputed total score does not match assessment record.")
+    if not np.isclose(
+        s_agg,
+        float(np.asarray(record["agg_scores"], dtype=float)[target_idx]),
+        atol=1e-9,
+        rtol=1e-8,
+    ):
+        raise ValueError("Recomputed aggregation score does not match record.")
+    if not np.isclose(
+        s_total,
+        float(np.asarray(record["scores"], dtype=float)[target_idx]),
+        atol=1e-9,
+        rtol=1e-8,
+    ):
+        raise ValueError("Recomputed total score does not match record.")
 
-    return np.array([c_max, c_avg, c_soft, c_agg, c_form, c_total])
+    return {
+        "C_max": c_max,
+        "C_avg": c_avg,
+        "C_soft": c_soft,
+        "S_agg": s_agg,
+        "S_form": s_form,
+        "S_total": s_total,
+    }
 
 
-def _save_control_consistency(metrics, output_path):
-    fig, ax = plt.subplots(figsize=(7.0, 2.35), dpi=220)
-    ax.axis("off")
-    rows = [
-        ["编队成员位置 MAE", f"{metrics['geometry_mae']:.3e}", "应接近 0"],
-        ["单机局部威胁矩阵 MAE", f"{metrics['pair_mae']:.3e}", "应接近 0"],
-        ["编队整体威胁分支 MAE", f"{metrics['form_mae']:.3e}", "应接近 0"],
-    ]
-    table = ax.table(
-        cellText=rows,
-        colLabels=["控制指标", "计算结果", "一致性要求"],
-        cellLoc="center",
-        colLoc="center",
-        loc="center",
-        colWidths=[0.46, 0.26, 0.25],
+def _physical_reference_member(pair_features):
+    """Choose the member reached first by the target's relative trajectory."""
+    candidates = []
+    for member_idx, feature in enumerate(pair_features):
+        ttc = float(feature["TTC"])
+        closing_speed = float(feature["ClosingSpeed"])
+        if np.isfinite(ttc) and ttc < 1e5 and closing_speed > 1e-8:
+            candidates.append(member_idx)
+    if not candidates:
+        return None
+    return min(
+        candidates,
+        key=lambda idx: (
+            float(pair_features[idx]["TTC"]),
+            float(pair_features[idx]["Shortcut"]),
+            float(pair_features[idx]["Distance"]),
+        ),
     )
-    table.auto_set_font_size(False)
-    table.set_fontsize(9.2)
-    table.scale(1.0, 1.55)
-    for (row, col), cell in table.get_celld().items():
-        cell.set_edgecolor("#8ba4bf")
-        cell.set_linewidth(0.75)
-        if row == 0:
-            cell.set_facecolor("#0b438c")
-            cell.get_text().set_color("white")
-            cell.get_text().set_weight("bold")
-        else:
-            cell.set_facecolor("#f8fbff" if row % 2 else "white")
-    ax.set_title("两组实验输入与未加权分支一致性验证", pad=8)
+
+
+def _build_event_diagnostics(
+    homogeneous_records,
+    heterogeneous_records,
+    target_series,
+    friendly_series,
+    lambdas,
+    tau,
+    beta,
+    sample_step=5,
+    start_time=75.0,
+):
+    rows = []
+    times = np.asarray([record["time"] for record in heterogeneous_records], dtype=float)
+    for record_idx in range(0, len(times), max(int(sample_step), 1)):
+        time_value = float(times[record_idx])
+        if time_value < start_time:
+            continue
+        hom_record = homogeneous_records[record_idx]
+        het_record = heterogeneous_records[record_idx]
+        n_targets = len(target_series[record_idx])
+        for target_idx in range(n_targets):
+            target_state = target_series[record_idx][target_idx]
+            pair_features = [
+                build_pairwise_target(target_state, friendly_state)
+                for friendly_state in friendly_series[record_idx]
+            ]
+            physical_idx = _physical_reference_member(pair_features)
+            if physical_idx is None:
+                continue
+
+            local_scores = np.asarray(het_record["pair_scores"], dtype=float)[:, target_idx]
+            model_order = np.argsort(-local_scores)
+            model_idx = int(model_order[0])
+            second_idx = int(model_order[1]) if len(model_order) > 1 else model_idx
+            hom_components = _components(hom_record, target_idx, lambdas, tau, beta)
+            het_components = _components(het_record, target_idx, lambdas, tau, beta)
+            reference_feature = pair_features[physical_idx]
+            target_id = target_state.get("Target_ID", target_idx + 1)
+            try:
+                target_number = int(target_id)
+                target_name = f"T{target_number}"
+            except (TypeError, ValueError):
+                target_name = str(target_id)
+
+            row = {
+                "record_idx": record_idx,
+                "time": time_value,
+                "target_idx": target_idx,
+                "target": target_name,
+                "target_type": str(target_state.get("Type", "Unknown")),
+                "target_intent": str(target_state.get("IntentGT", "Unknown")),
+                "physical_member_idx": physical_idx,
+                "physical_member": ROLE_IDS[physical_idx],
+                "model_member_idx": model_idx,
+                "model_member": ROLE_IDS[model_idx],
+                "top1_match": int(model_idx == physical_idx),
+                "top2_match": int(physical_idx in model_order[:2]),
+                "model_margin": float(local_scores[model_idx] - local_scores[second_idx]),
+                "local_spread": float(np.max(local_scores) - np.min(local_scores)),
+                "reference_distance_km": float(reference_feature["Distance"]),
+                "reference_ttc_s": float(reference_feature["TTC"]),
+                "reference_closing_speed_km_s": float(reference_feature["ClosingSpeed"]),
+                "reference_shortcut_km": float(reference_feature["Shortcut"]),
+            }
+            for member_idx in range(4):
+                row[f"C_F{member_idx + 1}"] = float(local_scores[member_idx])
+                row[f"distance_F{member_idx + 1}_km"] = float(
+                    pair_features[member_idx]["Distance"]
+                )
+                row[f"ttc_F{member_idx + 1}_s"] = float(pair_features[member_idx]["TTC"])
+            for key in ("C_avg", "C_soft", "S_agg", "S_total"):
+                row[f"hom_{key}"] = hom_components[key]
+                row[f"het_{key}"] = het_components[key]
+                row[f"delta_{key}"] = het_components[key] - hom_components[key]
+            rows.append(row)
+    if not rows:
+        raise ValueError("No active target-member approach samples were found.")
+    return rows
+
+
+def _save_member_confusion(rows, output_path):
+    matrix = np.zeros((4, 4), dtype=int)
+    for row in rows:
+        matrix[row["physical_member_idx"], row["model_member_idx"]] += 1
+    row_totals = matrix.sum(axis=1, keepdims=True)
+    percentages = np.divide(
+        matrix,
+        row_totals,
+        out=np.zeros_like(matrix, dtype=float),
+        where=row_totals > 0,
+    ) * 100.0
+
+    top1 = float(np.mean([row["top1_match"] for row in rows]))
+    top2 = float(np.mean([row["top2_match"] for row in rows]))
+    median_spread = float(np.median([row["local_spread"] for row in rows]))
+
+    fig, ax = plt.subplots(figsize=(7.2, 4.6), dpi=220)
+    image = ax.imshow(percentages, cmap="Blues", vmin=0.0, vmax=100.0)
+    ax.set_xticks(np.arange(4))
+    ax.set_xticklabels(ROLE_IDS)
+    ax.set_yticks(np.arange(4))
+    ax.set_yticklabels(ROLE_NAMES)
+    ax.set_xlabel("模型判定的主要受威胁成员")
+    ax.set_ylabel("相对运动几何参考成员")
+    ax.set_title("异构编队成员威胁识别混淆矩阵", pad=12)
+    for row_idx in range(4):
+        for col_idx in range(4):
+            count = matrix[row_idx, col_idx]
+            text_value = "-" if row_totals[row_idx, 0] == 0 else f"{percentages[row_idx, col_idx]:.1f}%\n(n={count})"
+            ax.text(
+                col_idx,
+                row_idx,
+                text_value,
+                ha="center",
+                va="center",
+                fontsize=9.2,
+                color="white" if percentages[row_idx, col_idx] >= 52 else "#1f1f1f",
+            )
+    colorbar = fig.colorbar(image, ax=ax, fraction=0.045, pad=0.035)
+    colorbar.set_label("按几何参考成员归一化 / %")
+    fig.text(
+        0.5,
+        0.02,
+        f"有效接近样本 N={len(rows)}    Top-1一致率={top1:.1%}    "
+        f"Top-2覆盖率={top2:.1%}    局部威胁中位极差={median_spread:.4f}",
+        ha="center",
+        fontsize=9.0,
+        color="#174a8b",
+    )
+    fig.subplots_adjust(left=0.18, right=0.88, top=0.88, bottom=0.18)
     fig.savefig(output_path, dpi=220, bbox_inches="tight", facecolor="white")
     plt.close(fig)
+    return matrix, top1, top2, median_spread
 
 
-def _save_weighted_contributions(
-    hom_record,
-    het_record,
-    target_idx,
-    time_value,
+def _save_correction_boxplot(rows, output_path):
+    grouped = [
+        np.asarray(
+            [row["delta_S_agg"] * 1000.0 for row in rows if row["physical_member_idx"] == idx],
+            dtype=float,
+        )
+        for idx in range(4)
+    ]
+    fig, ax = plt.subplots(figsize=(7.4, 4.5), dpi=220)
+    for idx, values in enumerate(grouped, start=1):
+        if values.size == 0:
+            continue
+        box = ax.boxplot(
+            [values],
+            positions=[idx],
+            widths=0.52,
+            patch_artist=True,
+            showfliers=False,
+            medianprops={"color": "white", "linewidth": 1.7},
+            whiskerprops={"color": ROLE_COLORS[idx - 1]},
+            capprops={"color": ROLE_COLORS[idx - 1]},
+        )
+        box["boxes"][0].set_facecolor(ROLE_COLORS[idx - 1])
+        box["boxes"][0].set_alpha(0.86)
+        jitter = np.linspace(-0.13, 0.13, min(values.size, 28))
+        sampled = values[np.linspace(0, values.size - 1, len(jitter), dtype=int)]
+        ax.scatter(idx + jitter, sampled, s=10, color="#303030", alpha=0.32, zorder=3)
+        ax.text(
+            idx,
+            np.nanmax(values) + max(np.ptp(values), 0.001) * 0.08,
+            f"n={values.size}\n中位数={np.median(values):+.3f}",
+            ha="center",
+            va="bottom",
+            fontsize=8.2,
+        )
+    ax.axhline(0.0, color="#4d4d4d", linewidth=0.9, linestyle="--")
+    ax.set_xticks(np.arange(1, 5))
+    ax.set_xticklabels(ROLE_NAMES)
+    ax.set_ylabel(r"异构修正量  $\Delta S^{agg}$  ($\times 10^{-3}$)")
+    ax.set_title("不同受威胁成员下的异构聚合修正方向", pad=12)
+    ax.grid(axis="y", color="#dddddd", linewidth=0.65, alpha=0.85)
+    ax.set_axisbelow(True)
+    fig.text(
+        0.5,
+        0.02,
+        "正值表示异构任务价值使聚合威胁上调，负值表示下调；箱体反映全部有效接近样本，而非预设单点。",
+        ha="center",
+        fontsize=8.8,
+        color="#174a8b",
+    )
+    fig.subplots_adjust(left=0.12, right=0.98, top=0.87, bottom=0.20)
+    fig.savefig(output_path, dpi=220, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return grouped
+
+
+def _select_key_event(rows):
+    matched = [row for row in rows if row["top1_match"]]
+    near_term = [
+        row
+        for row in matched
+        if row["reference_distance_km"] <= 300.0
+        and row["reference_ttc_s"] <= 300.0
+    ]
+    candidates = near_term or matched or rows
+    return max(
+        candidates,
+        key=lambda row: (abs(row["delta_S_total"]), row["model_margin"]),
+    )
+
+
+def _save_key_event_chain(
+    key_event,
+    homogeneous_records,
+    heterogeneous_records,
     output_path,
 ):
-    hom_pair = np.asarray(hom_record["pair_scores"], dtype=float)[:, target_idx]
-    het_pair = np.asarray(het_record["pair_scores"], dtype=float)[:, target_idx]
+    record_idx = key_event["record_idx"]
+    target_idx = key_event["target_idx"]
+    hom_record = homogeneous_records[record_idx]
+    het_record = heterogeneous_records[record_idx]
+    local_scores = np.asarray(het_record["pair_scores"], dtype=float)[:, target_idx]
     hom_weights = np.asarray(hom_record["friendly_weights"], dtype=float)
     het_weights = np.asarray(het_record["friendly_weights"], dtype=float)
-    hom_contribution = hom_weights * hom_pair
-    het_contribution = het_weights * het_pair
+    contribution_delta = (het_weights - hom_weights) * local_scores
+    propagation_names = (r"$\Delta C_{avg}$", r"$\Delta C_{soft}$", r"$\Delta S_{agg}$", r"$\Delta S_{total}$")
+    propagation = np.asarray([
+        key_event["delta_C_avg"],
+        key_event["delta_C_soft"],
+        key_event["delta_S_agg"],
+        key_event["delta_S_total"],
+    ])
 
-    x = np.arange(len(hom_weights))
-    width = 0.34
-    fig, ax = plt.subplots(figsize=(7.3, 4.0), dpi=220)
-    bars_hom = ax.bar(
-        x - width / 2,
-        hom_contribution,
-        width,
-        color="#2455a4",
-        label="同构编队",
+    fig, axes = plt.subplots(1, 3, figsize=(12.2, 3.9), dpi=220)
+    x = np.arange(4)
+    bars = axes[0].bar(x, local_scores, color=ROLE_COLORS, width=0.62)
+    physical_idx = key_event["physical_member_idx"]
+    bars[physical_idx].set_edgecolor("#111111")
+    bars[physical_idx].set_linewidth(2.0)
+    axes[0].set_xticks(x)
+    axes[0].set_xticklabels(ROLE_IDS)
+    axes[0].set_ylim(0.0, 1.03)
+    axes[0].set_ylabel("局部威胁度 $C_{ij}$")
+    axes[0].set_title(
+        f"1  单机局部威胁识别（参考/判定：{ROLE_IDS[physical_idx]}）"
     )
-    bars_het = ax.bar(
-        x + width / 2,
-        het_contribution,
-        width,
-        color="#ed8b00",
-        label="异构编队",
+    for idx, value in enumerate(local_scores):
+        axes[0].text(idx, value + 0.018, f"{value:.3f}", ha="center", fontsize=8.0)
+
+    colors = ["#d73027" if value >= 0 else "#2878b5" for value in contribution_delta]
+    axes[1].bar(x, contribution_delta * 1000.0, color=colors, width=0.62)
+    axes[1].axhline(0.0, color="#444444", linewidth=0.8)
+    axes[1].set_xticks(x)
+    axes[1].set_xticklabels(ROLE_IDS)
+    axes[1].set_ylabel(r"成员贡献变化 ($\times 10^{-3}$)")
+    axes[1].set_title("2  异构任务价值加权")
+    for idx, value in enumerate(contribution_delta * 1000.0):
+        axes[1].text(idx, value, f"{value:+.2f}", ha="center", va="bottom" if value >= 0 else "top", fontsize=8.0)
+
+    prop_colors = ["#2f60ad", "#4b8b3b", "#ed8b00", "#b2182b"]
+    axes[2].bar(np.arange(4), propagation * 1000.0, color=prop_colors, width=0.62)
+    axes[2].axhline(0.0, color="#444444", linewidth=0.8)
+    axes[2].set_xticks(np.arange(4))
+    axes[2].set_xticklabels(propagation_names)
+    axes[2].set_ylabel(r"输出变化 ($\times 10^{-3}$)")
+    axes[2].set_title("3  聚合链路传播")
+    for idx, value in enumerate(propagation * 1000.0):
+        axes[2].text(idx, value, f"{value:+.3f}", ha="center", va="bottom" if value >= 0 else "top", fontsize=8.0)
+
+    for ax in axes:
+        ax.grid(axis="y", color="#dddddd", linewidth=0.6, alpha=0.8)
+        ax.set_axisbelow(True)
+    fig.suptitle(
+        f"关键事件聚合链路：{key_event['target']}，t={key_event['time']:.0f} s",
+        fontsize=13,
+        y=0.99,
     )
-    for bars, values in (
-        (bars_hom, hom_contribution),
-        (bars_het, het_contribution),
-    ):
-        for bar, value in zip(bars, values):
-            ax.text(
-                bar.get_x() + bar.get_width() / 2,
-                value,
-                f"{value:.3f}",
-                ha="center",
-                va="bottom",
-                fontsize=8,
-            )
-    ax.set_xticks(x)
-    ax.set_xticklabels(ROLE_LABELS)
-    ax.set_ylabel(r"加权平均分支贡献 $w_i C_{ij}$")
-    ax.set_title(f"目标 T{target_idx + 1} 在 t={time_value:.0f} s 的成员加权贡献")
-    ax.grid(axis="y", color="#dddddd", linewidth=0.65, alpha=0.8)
-    ax.legend(frameon=False, loc="upper right")
-    ax.set_axisbelow(True)
-    ax.text(
-        0.01,
-        -0.22,
-        "异构权重：F1=0.333，F2=0.208，F3=0.208，F4=0.250；"
-        "柱值之和等于加权平均项。",
-        transform=ax.transAxes,
-        fontsize=8.5,
+    fig.text(
+        0.5,
+        0.02,
+        f"参考成员距离={key_event['reference_distance_km']:.1f} km，"
+        f"进入威胁边界时间={key_event['reference_ttc_s']:.1f} s；"
+        "局部识别 → 角色加权 → 聚合分支 → 综合威胁，逐级展示异构信息如何进入结果。",
+        ha="center",
+        fontsize=8.8,
         color="#174a8b",
     )
-    fig.subplots_adjust(bottom=0.24)
+    fig.subplots_adjust(left=0.065, right=0.99, top=0.82, bottom=0.20, wspace=0.28)
     fig.savefig(output_path, dpi=220, bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
 
-def _save_aggregation_branches(
-    hom_values,
-    het_values,
-    target_idx,
-    time_value,
-    output_path,
-):
-    labels = (
-        r"$C^{max}$ 最大项",
-        r"$C^{avg}$ 加权平均",
-        r"$C^{soft}$ 加权软最大",
-        r"$S^{agg}$ 聚合分支",
-        r"$S^{form}$ 编队整体分支",
-        r"$S^{total}$ 综合威胁度",
-    )
-    y = np.arange(len(labels))
-    delta = het_values - hom_values
-    colors = [
-        "#ed8b00" if value > 1e-12 else "#9ca3af"
-        for value in delta
-    ]
-    fig, ax = plt.subplots(figsize=(7.7, 4.25), dpi=220)
-    bars = ax.barh(y, delta, height=0.58, color=colors)
-    ax.set_yticks(y)
-    ax.set_yticklabels(labels)
-    ax.invert_yaxis()
-    max_delta = max(float(np.max(np.abs(delta))), 1e-6)
-    ax.set_xlim(-max_delta * 0.22, max_delta * 1.32)
-    ax.axvline(0.0, color="#444444", linewidth=0.8)
-    ax.set_xlabel(r"异构相对同构的变化量 $\Delta=Hetero-Homo$")
-    ax.set_title(
-        f"目标 T{target_idx + 1} 在 t={time_value:.0f} s 的异构影响传递",
-        pad=10,
-    )
-    ax.grid(axis="x", color="#dddddd", linewidth=0.65, alpha=0.8)
-    ax.set_axisbelow(True)
-    for bar, value in zip(bars, delta):
-        x_text = value + max_delta * 0.025 if value >= 0 else value - max_delta * 0.025
+def _shade_stages(ax):
+    for start, end, label, color in FORMATION_STAGES:
+        ax.axvspan(start, end, color=color, alpha=0.72, zorder=0)
         ax.text(
-            x_text,
-            bar.get_y() + bar.get_height() / 2,
-            f"{value:+.4f}",
-            va="center",
-            ha="left" if value >= 0 else "right",
-            fontsize=8.4,
+            0.5 * (start + end),
+            1.015,
+            label,
+            transform=ax.get_xaxis_transform(),
+            ha="center",
+            va="bottom",
+            fontsize=8.0,
+            color="#333333",
         )
-    ax.text(
-        0.01,
-        -0.18,
-        rf"综合威胁度：{hom_values[-1]:.4f} $\rightarrow$ {het_values[-1]:.4f}；"
-        r"$S^{total}=0.7S^{form}+0.3S^{agg}$。",
-        transform=ax.transAxes,
-        fontsize=8.5,
-        color="#174a8b",
-    )
-    fig.subplots_adjust(left=0.23, bottom=0.21)
-    fig.savefig(output_path, dpi=220, bbox_inches="tight", facecolor="white")
-    plt.close(fig)
+    for boundary in (140, 260, 340, 460):
+        ax.axvline(boundary, color="#a8a8a8", linestyle="--", linewidth=0.7)
 
 
-def _save_target_sensitivity(
-    mean_abs_delta,
-    max_abs_delta,
-    selected_idx,
-    output_path,
-):
-    target_count = len(mean_abs_delta)
-    y = np.arange(target_count)
-    height = 0.34
-    fig, ax = plt.subplots(figsize=(7.0, 4.0), dpi=220)
-    bars_mean = ax.barh(
-        y + height / 2,
-        mean_abs_delta,
-        color="#2455a4",
-        height=height,
-        label="全时段平均绝对变化",
-    )
-    bars_max = ax.barh(
-        y - height / 2,
-        max_abs_delta,
-        color="#ed8b00",
-        height=height,
-        label="最大瞬时绝对变化",
-    )
-    ax.set_yticks(y)
-    ax.set_yticklabels([f"T{i + 1}" for i in y])
-    ax.invert_yaxis()
-    ax.set_xlabel(r"综合威胁度绝对变化 $|\Delta S_j^{total}|$")
-    ax.set_title("成员异构对各目标综合威胁度的响应幅度")
-    ax.grid(axis="x", color="#dddddd", linewidth=0.65, alpha=0.8)
-    ax.set_axisbelow(True)
-    ax.legend(frameon=False, loc="lower right")
-    max_value = max(float(np.max(max_abs_delta)), 1e-6)
-    ax.set_xlim(0, max_value * 1.25)
-    for bars, values in ((bars_mean, mean_abs_delta), (bars_max, max_abs_delta)):
-        for bar, value in zip(bars, values):
-            ax.text(
-                value + max_value * 0.012,
-                bar.get_y() + bar.get_height() / 2,
-                f"{value:.4f}",
-                va="center",
-                fontsize=7.7,
-            )
-    ax.get_yticklabels()[selected_idx].set_color("#d62828")
-    ax.get_yticklabels()[selected_idx].set_weight("bold")
-    fig.savefig(output_path, dpi=220, bbox_inches="tight", facecolor="white")
-    plt.close(fig)
-
-
-def _save_total_score_delta(times, score_delta, selected_idx, output_path):
-    fig, ax = plt.subplots(figsize=(9.0, 3.7), dpi=220)
-    _shade_stages(ax)
-    colors = plt.cm.tab10(np.linspace(0.0, 0.9, score_delta.shape[1]))
-    for target_idx in range(score_delta.shape[1]):
-        selected = target_idx == selected_idx
-        ax.plot(
-            times,
-            score_delta[:, target_idx],
-            color="#d62828" if selected else colors[target_idx],
-            linewidth=2.0 if selected else 0.95,
-            alpha=1.0 if selected else 0.72,
-            label=f"T{target_idx + 1}",
-            zorder=3 if selected else 2,
-        )
-    ax.axhline(0.0, color="#444444", linewidth=0.8)
-    max_value = max(float(np.max(np.abs(score_delta))), 1e-6)
-    ax.set_ylim(-max_value * 1.18, max_value * 1.18)
-    ax.set_xlim(float(times[0]), float(times[-1]))
-    ax.set_xlabel("时间 t (s)")
-    ax.set_ylabel(r"综合威胁度差值 $\Delta S_j^{total}$")
-    ax.set_title("动态异构编队相对同构编队的逐时刻威胁度变化", pad=28)
-    ax.grid(True, color="#dddddd", linewidth=0.65, alpha=0.72)
-    ax.legend(frameon=False, ncol=4, loc="upper right")
-    fig.subplots_adjust(top=0.76, bottom=0.18)
-    fig.savefig(output_path, dpi=220, bbox_inches="tight", facecolor="white")
-    plt.close(fig)
-
-
-def _stage_name(time_value):
-    for start, end, label, _ in STAGES:
-        if start <= time_value <= end:
-            return label
-    return ""
-
-
-def _top_three(scores):
-    return " > ".join(f"T{i + 1}" for i in np.argsort(scores)[::-1][:3])
-
-
-def _save_rank_consistency(
-    times,
-    rho,
-    hom_scores,
-    het_scores,
-    output_path,
-):
+def _save_rank_stability(times, hom_scores, het_scores, output_path):
     hom_positions = _rank_positions(hom_scores)
     het_positions = _rank_positions(het_scores)
-    rank_delta = het_positions - hom_positions
-    score_delta = het_scores - hom_scores
+    rho = _spearman_from_positions(hom_positions, het_positions)
+    hom_order = np.argsort(-hom_scores, axis=1)
+    het_order = np.argsort(-het_scores, axis=1)
+    top1_retention = float(np.mean(hom_order[:, 0] == het_order[:, 0]))
+    top3_retention = float(np.mean([
+        set(hom_order[idx, :3]) == set(het_order[idx, :3])
+        for idx in range(len(times))
+    ]))
+    delta = het_scores - hom_scores
+    metrics = {
+        "mean_spearman": float(np.mean(rho)),
+        "min_spearman": float(np.min(rho)),
+        "top1_retention": top1_retention,
+        "top3_retention": top3_retention,
+        "median_abs_score_delta": float(np.median(np.abs(delta))),
+        "max_abs_score_delta": float(np.max(np.abs(delta))),
+    }
 
-    event_indices = []
-    candidates = [
-        int(np.argmin(rho)),
-        int(np.argmax(np.max(np.abs(score_delta), axis=1))),
-    ]
-    candidates.extend(int(idx) for idx in np.argsort(rho))
-    for idx in candidates:
-        if idx not in event_indices:
-            event_indices.append(idx)
-        if len(event_indices) == 3:
-            break
-
-    fig = plt.figure(figsize=(10.4, 4.3), dpi=220)
-    grid = fig.add_gridspec(1, 2, width_ratios=(1.35, 1.05), wspace=0.22)
+    fig = plt.figure(figsize=(9.2, 4.4), dpi=220)
+    grid = fig.add_gridspec(1, 2, width_ratios=(1.85, 1.0), wspace=0.16)
     ax = fig.add_subplot(grid[0, 0])
-    ax_table = fig.add_subplot(grid[0, 1])
-
-    image = ax.imshow(
-        rank_delta.T,
-        aspect="auto",
-        interpolation="nearest",
-        cmap="RdBu_r",
-        vmin=-2,
-        vmax=2,
-        extent=(float(times[0]), float(times[-1]), hom_scores.shape[1] + 0.5, 0.5),
+    ax_info = fig.add_subplot(grid[0, 1])
+    _shade_stages(ax)
+    ax.plot(times, rho, color="#174a8b", linewidth=1.7)
+    min_idx = int(np.argmin(rho))
+    ax.scatter(times[min_idx], rho[min_idx], color="#d73027", s=28, zorder=4)
+    ax.annotate(
+        f"最低 ρ={rho[min_idx]:.3f}\nt={times[min_idx]:.0f} s",
+        xy=(times[min_idx], rho[min_idx]),
+        xytext=(12, -34),
+        textcoords="offset points",
+        fontsize=8.2,
+        color="#b2182b",
+        arrowprops={"arrowstyle": "->", "color": "#b2182b", "lw": 0.8},
     )
+    ax.set_xlim(float(times[0]), float(times[-1]))
+    ax.set_ylim(max(-0.05, float(np.min(rho)) - 0.08), 1.02)
     ax.set_xlabel("时间 t (s)")
-    ax.set_ylabel("敌方目标")
-    ax.set_yticks(np.arange(1, hom_scores.shape[1] + 1))
-    ax.set_yticklabels([f"T{i + 1}" for i in range(hom_scores.shape[1])])
-    for boundary in (140, 260, 340, 460):
-        ax.axvline(boundary, color="#333333", linestyle="--", linewidth=0.65)
-    colorbar = fig.colorbar(image, ax=ax, fraction=0.046, pad=0.03)
-    colorbar.set_label("名次变化（负值表示优先级上升）", fontsize=8.5)
+    ax.set_ylabel("Spearman 排序相关系数 ρ")
+    ax.set_title("异构修正前后的全目标排序一致性", pad=24)
+    ax.grid(color="#dddddd", linewidth=0.6, alpha=0.8)
+    ax.set_axisbelow(True)
 
-    rows = []
-    for idx in sorted(event_indices):
-        changed_targets = []
-        for target_idx, difference in enumerate(rank_delta[idx]):
-            if difference < 0:
-                changed_targets.append(f"T{target_idx + 1}↑")
-            elif difference > 0:
-                changed_targets.append(f"T{target_idx + 1}↓")
-        rows.append([
-            f"{int(times[idx])} s",
-            f"{rho[idx]:.3f}",
-            _top_three(hom_scores[idx]),
-            _top_three(het_scores[idx]),
-            " ".join(changed_targets) or "无",
-        ])
-    ax_table.axis("off")
-    table = ax_table.table(
-        cellText=rows,
-        colLabels=["时刻", r"$\rho$", "同构 Top-3", "异构 Top-3", "名次变化"],
-        cellLoc="center",
-        colLoc="center",
-        loc="center",
-        colWidths=[0.15, 0.13, 0.25, 0.25, 0.23],
+    ax_info.axis("off")
+    ax_info.set_xlim(0.0, 1.0)
+    ax_info.set_ylim(0.0, 1.0)
+    ax_info.set_title("排序稳定性指标", pad=12, color="#0b438c", fontweight="bold")
+    labels = (
+        ("平均 Spearman ρ", f"{metrics['mean_spearman']:.3f}"),
+        ("最低 Spearman ρ", f"{metrics['min_spearman']:.3f}"),
+        ("Top-1 保持率", f"{metrics['top1_retention']:.1%}"),
+        ("Top-3 集合保持率", f"{metrics['top3_retention']:.1%}"),
+        ("威胁度中位绝对变化", f"{metrics['median_abs_score_delta']:.4f}"),
+        ("威胁度最大绝对变化", f"{metrics['max_abs_score_delta']:.4f}"),
     )
-    table.auto_set_font_size(False)
-    table.set_fontsize(8.1)
-    table.scale(1.0, 1.62)
-    for (row, col), cell in table.get_celld().items():
-        cell.set_edgecolor("#8ba4bf")
-        cell.set_linewidth(0.7)
-        if row == 0:
-            cell.set_facecolor("#0b438c")
-            cell.get_text().set_color("white")
-            cell.get_text().set_weight("bold")
-        else:
-            cell.set_facecolor("#f8fbff" if row % 2 else "white")
+    y = 0.91
+    for label, value in labels:
+        ax_info.text(
+            0.04, y, label, fontsize=9.0, color="#333333", va="center",
+            transform=ax_info.transAxes,
+        )
+        ax_info.text(
+            0.96, y, value, fontsize=10.4, color="#0b438c", va="center",
+            ha="right", fontweight="bold", transform=ax_info.transAxes,
+        )
+        ax_info.plot([0.04, 0.96], [y - 0.07, y - 0.07], color="#d9e2ef", lw=0.8, transform=ax_info.transAxes)
+        y -= 0.145
     fig.text(
-        0.29,
-        0.96,
-        f"目标名次变化分布（平均 ρ={np.mean(rho):.3f}，最小 ρ={np.min(rho):.3f}）",
+        0.5,
+        0.02,
+        "高排序一致性表示异构信息对威胁度进行可解释的局部修正，同时保持全局排序的连续性与稳定性。",
         ha="center",
-        va="top",
-        fontsize=10.5,
+        fontsize=8.8,
+        color="#174a8b",
     )
-    fig.text(
-        0.79,
-        0.96,
-        "排序变化关键时刻",
-        ha="center",
-        va="top",
-        fontsize=10.5,
-    )
-    fig.subplots_adjust(top=0.83, bottom=0.14, left=0.07, right=0.98)
+    fig.subplots_adjust(left=0.08, right=0.98, top=0.82, bottom=0.18)
     fig.savefig(output_path, dpi=220, bbox_inches="tight", facecolor="white")
     plt.close(fig)
+    return metrics
+
+
+def _write_rows_csv(rows, output_path):
+    fieldnames = list(rows[0].keys())
+    with open(output_path, "w", newline="", encoding="utf-8-sig") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _write_summary_csv(summary, output_path):
+    with open(output_path, "w", newline="", encoding="utf-8-sig") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(("metric", "value"))
+        for key, value in summary.items():
+            writer.writerow((key, value))
 
 
 def save_heterogeneous_result_figures(
@@ -447,17 +523,20 @@ def save_heterogeneous_result_figures(
     heterogeneous_records,
     homogeneous_friendlies,
     heterogeneous_friendlies,
+    target_series,
     save_dir,
     beta=0.7,
     lambdas=(0.5, 0.3, 0.2),
     tau=0.1,
 ):
-    """Validate and save five independent scene-4 result figures."""
+    """Save four scene-4 validation figures and their traceable data tables."""
     if len(homogeneous_records) != len(heterogeneous_records):
         raise ValueError("Homogeneous and heterogeneous record lengths differ.")
+    if len(target_series) != len(heterogeneous_records):
+        raise ValueError("Target trajectory and assessment record lengths differ.")
 
-    times_hom = np.array([record["time"] for record in homogeneous_records])
-    times_het = np.array([record["time"] for record in heterogeneous_records])
+    times_hom = np.asarray([record["time"] for record in homogeneous_records], dtype=float)
+    times_het = np.asarray([record["time"] for record in heterogeneous_records], dtype=float)
     if not np.array_equal(times_hom, times_het):
         raise ValueError("Homogeneous and heterogeneous timelines differ.")
 
@@ -467,9 +546,6 @@ def save_heterogeneous_result_figures(
     het_pair = _stack(heterogeneous_records, "pair_scores")
     hom_form = _stack(homogeneous_records, "form_scores")
     het_form = _stack(heterogeneous_records, "form_scores")
-    if hom_scores.shape != het_scores.shape or hom_pair.shape != het_pair.shape:
-        raise ValueError("Homogeneous and heterogeneous result shapes differ.")
-
     hom_positions = np.asarray([
         [[f["X"], f["Y"], f["Z"]] for f in step]
         for step in homogeneous_friendlies
@@ -478,86 +554,82 @@ def save_heterogeneous_result_figures(
         [[f["X"], f["Y"], f["Z"]] for f in step]
         for step in heterogeneous_friendlies
     ], dtype=float)
-    metrics = {
+    control_metrics = {
         "geometry_mae": float(np.mean(np.abs(hom_positions - het_positions))),
         "pair_mae": float(np.mean(np.abs(hom_pair - het_pair))),
         "form_mae": float(np.mean(np.abs(hom_form - het_form))),
     }
 
-    score_delta = het_scores - hom_scores
-    flat_index = int(np.argmax(np.abs(score_delta)))
-    time_idx, target_idx = np.unravel_index(flat_index, score_delta.shape)
-    time_value = float(times_hom[time_idx])
-    mean_abs_delta = np.mean(np.abs(score_delta), axis=0)
-    max_abs_delta_by_target = np.max(np.abs(score_delta), axis=0)
-    mean_sensitive_idx = int(np.argmax(mean_abs_delta))
-    max_sensitive_idx = int(np.argmax(max_abs_delta_by_target))
-
-    hom_components = _components(
-        homogeneous_records[time_idx], target_idx, lambdas, tau, beta
+    rows = _build_event_diagnostics(
+        homogeneous_records,
+        heterogeneous_records,
+        target_series,
+        heterogeneous_friendlies,
+        lambdas,
+        tau,
+        beta,
     )
-    het_components = _components(
-        heterogeneous_records[time_idx], target_idx, lambdas, tau, beta
-    )
-
-    hom_positions_rank = _rank_positions(hom_scores)
-    het_positions_rank = _rank_positions(het_scores)
-    rho = _spearman_from_positions(hom_positions_rank, het_positions_rank)
+    key_event = _select_key_event(rows)
 
     _set_style()
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
     paths = {
-        "control": save_dir / "Figure_Heterogeneous_Control_Consistency.png",
-        "contribution": save_dir / "Figure_Heterogeneous_Weighted_Contribution.png",
-        "aggregation": save_dir / "Figure_Heterogeneous_Aggregation_Branches.png",
-        "sensitivity": save_dir / "Figure_Heterogeneous_Target_Sensitivity.png",
-        "delta_timeseries": save_dir / "Figure_Heterogeneous_TotalScore_Delta_TimeSeries.png",
-        "ranking": save_dir / "Figure_Heterogeneous_Rank_Consistency.png",
+        "member_confusion": save_dir / "Figure_Heterogeneous_MemberRecognition.png",
+        "correction_direction": save_dir / "Figure_Heterogeneous_CorrectionByRole.png",
+        "key_event_chain": save_dir / "Figure_Heterogeneous_KeyEventChain.png",
+        "rank_stability": save_dir / "Figure_Heterogeneous_RankStability.png",
+        "event_data_csv": save_dir / "Table_Heterogeneous_EventDiagnostics.csv",
+        "summary_csv": save_dir / "Table_Heterogeneous_ValidationSummary.csv",
     }
 
-    _save_control_consistency(metrics, paths["control"])
-    _save_weighted_contributions(
-        homogeneous_records[time_idx],
-        heterogeneous_records[time_idx],
-        target_idx,
-        time_value,
-        paths["contribution"],
+    _, top1, top2, median_spread = _save_member_confusion(rows, paths["member_confusion"])
+    grouped = _save_correction_boxplot(rows, paths["correction_direction"])
+    _save_key_event_chain(
+        key_event,
+        homogeneous_records,
+        heterogeneous_records,
+        paths["key_event_chain"],
     )
-    _save_aggregation_branches(
-        hom_components,
-        het_components,
-        target_idx,
-        time_value,
-        paths["aggregation"],
-    )
-    _save_target_sensitivity(
-        mean_abs_delta,
-        max_abs_delta_by_target,
-        max_sensitive_idx,
-        paths["sensitivity"],
-    )
-    _save_total_score_delta(
-        times_hom,
-        score_delta,
-        target_idx,
-        paths["delta_timeseries"],
-    )
-    _save_rank_consistency(
-        times_hom,
-        rho,
-        hom_scores,
-        het_scores,
-        paths["ranking"],
-    )
+    rank_metrics = _save_rank_stability(times_hom, hom_scores, het_scores, paths["rank_stability"])
+
+    role_medians = {
+        f"delta_Sagg_median_{ROLE_IDS[idx]}": (
+            float(np.median(values / 1000.0)) if values.size else float("nan")
+        )
+        for idx, values in enumerate(grouped)
+    }
+    summary = {
+        "valid_approach_samples": len(rows),
+        "member_top1_accuracy": top1,
+        "member_top2_coverage": top2,
+        "median_local_score_spread": median_spread,
+        "key_event_target": key_event["target"],
+        "key_event_time_s": key_event["time"],
+        "key_event_physical_member": key_event["physical_member"],
+        "key_event_model_member": key_event["model_member"],
+        "key_event_delta_S_total": key_event["delta_S_total"],
+        **role_medians,
+        **rank_metrics,
+        **control_metrics,
+    }
+    _write_rows_csv(rows, paths["event_data_csv"])
+    _write_summary_csv(summary, paths["summary_csv"])
 
     return {
         "paths": {name: str(path) for name, path in paths.items()},
-        "selected_target": f"T{target_idx + 1}",
-        "selected_time": int(time_value),
-        "mean_sensitive_target": f"T{mean_sensitive_idx + 1}",
-        "max_abs_total_delta": float(abs(score_delta[time_idx, target_idx])),
-        "mean_spearman": float(np.mean(rho)),
-        "min_spearman": float(np.min(rho)),
-        **metrics,
+        "valid_samples": len(rows),
+        "top1_accuracy": top1,
+        "top2_coverage": top2,
+        "median_local_spread": median_spread,
+        "key_event": {
+            "target": key_event["target"],
+            "time": int(key_event["time"]),
+            "physical_member": key_event["physical_member"],
+            "model_member": key_event["model_member"],
+            "delta_total": key_event["delta_S_total"],
+        },
+        "role_delta_medians": role_medians,
+        **rank_metrics,
+        **control_metrics,
     }
